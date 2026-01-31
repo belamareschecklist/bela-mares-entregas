@@ -2,48 +2,28 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0B8F3B" />
-  <title>Bela Mares Incorporações</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icons/icon-192.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bela Mares Incorporações — Checklist</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="app" class="app">
-    <header class="topbar">
-      <div class="topbar__left">
-        <button id="btnBack" class="iconbtn" title="Voltar" aria-label="Voltar" hidden>←</button>
-        <div class="brand">
-          <div class="brand__dot"></div>
-          <div class="brand__text">
-            <div class="brand__title">Bela Mares Incorporações</div>
-            <div id="subtitle" class="brand__subtitle">Checklist de obra</div>
-          </div>
-        </div>
-      </div>
-      <div class="topbar__right">
-        <button id="btnInstall" class="chip" hidden>Instalar</button>
-        <button id="btnUser" class="chip" hidden></button>
-      </div>
-    </header>
-
-    <main id="view" class="view"></main>
-
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-
-    <!-- Modal -->
-    <div id="modalOverlay" class="modalOverlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <div class="modal__head">
-          <div id="modalTitle" class="modal__title">Título</div>
-          <button id="modalClose" class="iconbtn" aria-label="Fechar">✕</button>
-        </div>
-        <div id="modalBody" class="modal__body"></div>
-        <div id="modalActions" class="modal__actions"></div>
-      </div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand__name">Bela Mares Incorporações</div>
+      <div class="brand__sub">Checklist de obra</div>
     </div>
-  </div>
+    <div class="topbar__right">
+      <button id="btnBack" class="btn btn--ghost" style="display:none">← Voltar</button>
+      <div id="userChip" class="chip" style="display:none"></div>
+      <button id="btnLogout" class="btn btn--ghost" style="display:none">Sair</button>
+    </div>
+  </header>
+
+  <main id="app" class="app">
+    <!-- rendered by app.js -->
+  </main>
+
+  <div id="toast" class="toast" style="display:none"></div>
 
   <script src="app.js"></script>
 </body>

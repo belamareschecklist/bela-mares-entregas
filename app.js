@@ -1,1493 +1,805 @@
-/* Costa Rica - Entregas (Prototype PWA) — v2 (iPhone fix)
-   - Single-page prototype with localStorage persistence
-   - Roles: qualidade, execucao, supervisor
-   - States: pendente, feito, conferido, reprovado, reaberto
-   Fixes:
-   - Modal no longer "sticks` on iPhone (always closes on successful actions + forced close on navigation)
-   - Added Home screen: choose Obra + `Atualizar obras`
-*/
-const $ = (s, el=document) => el.querySelector(s);
-const $$ = (s, el=document) => Array.from(el.querySelectorAll(s));
 
-const STORAGE_KEY = `cr_entregas_v15`;
+/* Bela Mares — Checklist (v19) */
+/* Sem Service Worker para evitar cache travado em testes. */
 
-const ROLES = {
-  qualidade: `Qualidade`,
-  execucao: `Execução`,
-  supervisor: `Supervisor Manutenção`,
-  coordenador: `Coordenador`,
-  engenheiro: `Engenheiro Geral`,
-  diretor: `Diretor (Visualização)`
-};
+const STORAGE_KEY = "bm_checklist_v19";
 
-const STATE_LABEL = {
-  pendente: `Pendente`,
-  feito: `Feito`,
-  conferido: `Conferido`,
-  reprovado: `Reprovado`,
-  reaberto: `Reaberto`
-};
+const $ = (sel, root=document) => root.querySelector(sel);
+const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
-function nowISO(){ return new Date().toISOString(); }
-function fmtDT(iso){
-  try{
-    const d = new Date(iso);
-    return d.toLocaleString(`pt-BR", { dateStyle:"short", timeStyle:"short` });
-  }catch(e){ return ``; }
-}
-function uid(prefix=`id`){
-  return prefix + `_" + Math.random().toString(16).slice(2) + "_` + Date.now().toString(16);
-}
-
+const toastEl = () => $("#toast");
+let toastTimer = null;
 function toast(msg){
-  const t = $(`#toast`);
-  t.textContent = msg;
-  t.hidden = false;
-  clearTimeout(toast._tm);
-  toast._tm = setTimeout(()=> t.hidden = true, 2200);
+  const el = toastEl();
+  if(!el) return;
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
+}
+function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+
+function uid(prefix="id"){
+  return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
 
-function openModal({title, bodyHTML, actions=[]}){
-  const overlay = $(`#modalOverlay`);
-  $(`#modalTitle").textContent = title || "Ação`;
-  $(`#modalBody").innerHTML = bodyHTML || "`;
-  const act = $(`#modalActions`);
-  act.innerHTML = ``;
-  actions.forEach(a=>{
-    const b = document.createElement(`button`);
-    b.className = `btn " + (a.className||"`);
-    b.textContent = a.label;
-    b.addEventListener(`click`, async ()=>{
-      try{ await a.onClick?.(); }
-      finally{
-        if(a.close !== false) closeModal();
-      }
-    });
-    act.appendChild(b);
-  });
-  overlay.hidden = false;
-  overlay.style.display = `flex`;
-}
+const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
 
-function closeModal(){
-  const overlay = $(`#modalOverlay`);
-  overlay.hidden = true;
-  overlay.style.display = `none`;
-  $(`#modalTitle").textContent = "`;
-  $(`#modalBody").innerHTML = "`;
-  $(`#modalActions").innerHTML = "`;
-}
-
-$(`#modalClose").addEventListener("click`, closeModal);
-$(`#modalOverlay").addEventListener("click", (e)=>{ if(e.target.id==="modalOverlay`) closeModal(); });
-
-// Force-close any stuck modal (iOS) after DOM is ready
-document.addEventListener(`DOMContentLoaded`, ()=>{
-  try{ closeModal(); }catch(e){}
-});
-
-// Install prompt (works best in Safari)
-let deferredPrompt = null;
-window.addEventListener(`beforeinstallprompt`, (e)=>{
-  e.preventDefault();
-  deferredPrompt = e;
-  $(`#btnInstall`).hidden = false;
-});
-$(`#btnInstall").addEventListener("click`, async ()=>{
-  if(!deferredPrompt) return;
-  deferredPrompt.prompt();
-  await deferredPrompt.userChoice;
-  deferredPrompt = null;
-  $(`#btnInstall`).hidden = true;
-});
-
-if(`serviceWorker` in navigator){
-  navigator.serviceWorker.register(`sw.js`).catch(()=>{});
-}
-
-function seedData(){
-  // Obras iniciais
-  const obraCR = createObraData({ obraId: `costa_rica", obraName: "Costa Rica - Entregas`, numBlocks: 17, aptsPerBlock: 12 });
-  const obraCB = createObraData({ obraId: `costa_brava", obraName: "Costa Brava - Entregas`, numBlocks: 6, aptsPerBlock: 12 });
-
-  // Exemplo de pendência (demonstração)
-  try{
-    const a = obraCR.blocks[`B17"].apartments["204`];
-    a.pendencias.push({
-      id: uid(`p`),
-      title: `Rejunte falhando`,
-      category: `Revestimento`,
-      location: `Cozinha`,
-      state: `pendente`,
-      createdBy: { name:`Juliana", role:"qualidade` },
-      createdAt: nowISO(),
-      doneBy: null, doneAt: null,
-      reviewedBy: null, reviewedAt: null,
-      rejection: null,
-      reopenedAt: null
-    });
-  }catch(e){}
-
-  // Usuários (teste) — usuário + PIN
-  const users = [
-    { id: `supervisor_01", name: "Supervisor 01", role: "supervisor", pin: "3333", obraIds: ["*`], active: true },
-    { id: `qualidade_01", name: "Qualidade 01", role: "qualidade", pin: "2222", obraIds: ["*`], active: true },
-    { id: `exec_costa_rica", name: "Execução Costa Rica", role: "execucao", pin: "1234", obraIds: ["costa_rica`], active: true },
-    { id: `exec_costa_brava", name: "Execução Costa Brava", role: "execucao", pin: "5678", obraIds: ["costa_brava`], active: true },
-    { id: `coordenador", name: "Coordenador", role: "coordenador", pin: "7777", obraIds: ["*`], active: true },
-    { id: `engenheiro", name: "Engenheiro Geral", role: "engenheiro", pin: "8888", obraIds: ["*`], active: true },
-    { id: `diretor", name: "Diretor", role: "diretor", pin: "9999", obraIds: ["*`], active: true }
-  ];
-
-  return {
-    version: 18,
+function seed(){
+  const state = {
+    version: 19,
     session: null, // { userId }
-    users,
-    obras: { costa_rica: obraCR, costa_brava: obraCB },
-    obras_index: [
-      { id: `costa_rica`, name: obraCR.name, config: obraCR.config },
-      { id: `costa_brava`, name: obraCB.name, config: obraCB.config }
+    users: [
+      { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
+      { id:"qualidade_01", name:"Qualidade 01", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
+      { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
+      { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
+      { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+      { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
+      { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true },
     ],
-    last_obras_refresh: nowISO()
+    obras: {},
+    obras_index: [],
+    last_obras_refresh: new Date().toISOString()
   };
-}
 
-function createObraData({obraId, obraName, numBlocks=17, aptsPerBlock=12}){
-  // aptsPerBlock: 12 (101-104,201-204,301-304) or 16 (+401-404)
-  const nums12 = [101,102,103,104, 201,202,203,204, 301,302,303,304];
-  const nums16 = nums12.concat([401,402,403,404]);
-  const nums = (Number(aptsPerBlock) === 16) ? nums16 : nums12;
-
-  const blocos = {};
-  for(let b=1; b<=numBlocks; b++){
-    const blocoId = `B" + String(b).padStart(2,"0`);
-    const apts = {};
-    nums.forEach(n=>{
-      apts[String(n)] = { apto: String(n), pendencias: [], logs: [] };
-    });
-    blocos[blocoId] = { id: blocoId, name: `Bloco ` + b, apartments: apts };
+  function makeObra(id, name, numBlocks, aptsPerBlock){
+    const blocks = {};
+    for(let b=1;b<=numBlocks;b++){
+      const bid = "B"+b;
+      const apartments = {};
+      const nums = (aptsPerBlock===12) ? APT_NUMS_12 : []; // (se você quiser 16 depois, a gente coloca)
+      nums.forEach(n=>{
+        apartments[n] = { num:n, pendencias: [] };
+      });
+      blocks[bid] = { id:bid, apartments };
+    }
+    const obra = { id, name, config:{ numBlocks, aptsPerBlock }, blocks };
+    state.obras[id] = obra;
+    state.obras_index.push({ id, name, config: obra.config });
   }
-  return {
-    id: obraId,
-    name: obraName,
-    blocks: blocos,
-    config: { numBlocks: Number(numBlocks)||0, aptsPerBlock: (Number(aptsPerBlock)===16?16:12) }
-  };
-}
 
-function slugifyObraName(name){
-  return name.toLowerCase()
-    .normalize(`NFD").replace(/\p{Diacritic}/gu, "`)
-    .replace(/[^a-z0-9]+/g,`_`)
-    .replace(/^_+|_+$/g,``)
-    .slice(0, 40) || (`obra_` + Math.random().toString(16).slice(2,8));
-}
+  makeObra("costa_rica", "Costa Rica - Entregas", 17, 12);
+  makeObra("costa_brava", "Costa Brava - Entregas", 6, 12);
 
+  // demo
+  state.obras.costa_rica.blocks.B17.apartments["204"].pendencias.push({
+    id: uid("p"),
+    title: "Rejunte falhando",
+    category: "Revestimento",
+    location: "Cozinha",
+    state: "pendente", // pendente|feito|conferido|reprovado
+    createdAt: new Date().toISOString(),
+    createdBy: { id:"qualidade_01", name:"Qualidade 01", role:"qualidade" },
+    doneAt:null, doneBy:null,
+    reviewedAt:null, reviewedBy:null,
+    rejection:null,
+    reopenedAt:null
+  });
+
+  return state;
+}
 
 function loadState(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if(!raw) return seedData();
   try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return seed();
     const parsed = JSON.parse(raw);
-    if(!parsed?.obras?.costa_rica) return seedData();
+    if(!parsed || !parsed.version) return seed();
+    if(parsed.version !== 19) return seed();
     return parsed;
   }catch(e){
-    return seedData();
+    return seed();
   }
 }
+let state = loadState();
+
 function saveState(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-let state = loadState();
-
 function currentUser(){
   const sid = state.session?.userId;
   if(!sid) return null;
-  return (state.users||[]).find(u=>u.id===sid && u.active) || null;
+  return state.users.find(u=>u.id===sid && u.active) || null;
 }
 
-function setSession(userId){
-  state.session = userId ? { userId } : null;
-  saveState();
-  syncTopbar();
+function canViewOnly(u){
+  return ["diretor","engenheiro","coordenador"].includes(u.role);
+}
+function canCreate(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
+function canMarkDone(u){
+  return u.role==="execucao";
+}
+function canReview(u){
+  return u.role==="supervisor";
+}
+function canReopen(u){
+  return ["qualidade","supervisor"].includes(u.role);
 }
 
-function syncTopbar(){
-  const u = currentUser();
-  $(`#btnUser`).hidden = !u;
-  $(`#btnBack`).hidden = (router.stack.length <= 1);
-  if(u) $(`#btnUser").textContent = u.name + " • ` + (ROLES[u.role] || u.role);
-}
+const nav = { screen:"login", params:{} };
 
-$(`#btnUser").addEventListener("click`, ()=>{
-  const u = currentUser();
-  if(!u || !canAddObra(u)) return;
-  openModal({
-    title: `Conta`,
-    bodyHTML: \`
-      <div class=`small`>Você está logado como:</div>
-      <div style=`margin-top:6px;font-weight:950;font-size:16px`>${escapeHTML(u.name)}</div>
-      <div class=`small" style="margin-top:2px`>${escapeHTML(ROLES[u.role] || u.role)}</div>
-      <hr class=`hr`>
-      <button class=`btn btn--danger" id="logoutBtn`>Sair</button>
-    \`,
-    actions: [{ label:`Fechar", className:"`, onClick: ()=>{} }]
-  });
-  $(`#logoutBtn").addEventListener("click`, ()=>{
-    setSession(null);
-    closeModal();
-    router.go(`login`);
-    toast(`Você saiu.`);
-  });
-});
-
-
-function safeRender(){
-  try{ render(); }catch(e){}
-}
-
-const router = {
-  stack: [],
-  go(route, params={}){
-    this.stack.push({route, params});
-    render();
-  },
-  back(){
-    if(this.stack.length>1) this.stack.pop();
-    render();
-  },
-  current(){ return this.stack[this.stack.length-1] || {route:`login`, params:{}}; }
-};
-
-$(`#btnBack").addEventListener("click`, ()=> router.back());
-
-function requireLogin(){
-  if(!currentUser()){
-    router.go(`login`);
-    return false;
-  }
-  return true;
-}
-
-function setSubtitle(text){ $(`#subtitle").textContent = text || "Checklist de obra`; }
-
-function getApartment(obraId, blocoId, apto){
-  return state.obras[obraId].blocks[blocoId].apartments[String(apto)];
-}
-
-function logAction(apt, msg){
-  const u = currentUser();
-  apt.logs.unshift({
-    id: uid(`l`),
-    at: nowISO(),
-    who: u ? \`${u.name} (${ROLES[u.role]})\` : `Sistema`,
-    action: msg
-  });
-  apt.logs = apt.logs.slice(0, 80);
-}
-
-function aptStatus(apt){
-  const items = apt.pendencias;
-  if(items.length === 0) return `liberado`;
-  const bad = items.some(p => [`pendente","reprovado","reaberto`].includes(p.state));
-  if(bad) return `pendente`;
-  const waiting = items.some(p => p.state === `feito`);
-  if(waiting) return `aguardando`;
-  return `liberado`;
-}
-
-function statusDotClass(st){
-  if(st===`pendente") return "statusDot statusDot--red`;
-  if(st===`aguardando") return "statusDot statusDot--yellow`;
-  if(st===`liberado") return "statusDot statusDot--green`;
-  return `statusDot`;
-}
-function openCountForApt(apt){ return apt.pendencias.filter(p => p.state !== `conferido`).length; }
-function statusBadge(st, openCount){
-  if(st===`pendente") return `<span class="badge badge--red`>🔴 ${openCount}</span>\`;
-  if(st===`aguardando") return `<span class="badge badge--yellow`>🟡 ${openCount}</span>\`;
-  return \`<span class=`badge badge--green`>✅ ${openCount}</span>\`;
-}
-
-function canCreate(user){ return [`qualidade","supervisor`].includes(user.role); }
-function canMarkDone(user){ return user.role === `execucao`; }
-function canReview(user){ return user.role === `supervisor`; }
-function canReopen(user){ return [`qualidade","supervisor`].includes(user.role); }
-function canDeleteObra(user){ return user?.role === `supervisor`; }
-
-function renderLogin(){
-  setSubtitle(`Entrar`);
-  const v = $(`#view`);
-  v.innerHTML = \`
-    <div class=`card`>
-      <h1 class=`card__title" style="font-size:18px;margin:0 0 6px`>Entrar</h1>
-      <div class=`card__meta`>Acesso por <b>usuário</b> + <b>PIN</b>. (Protótipo)</div>
-      <hr class=`hr`>
-      <label class=`small`>Usuário</label>
-      <input id=`userId" class="input" placeholder="Ex.: exec_costa_rica" autocomplete="username`>
-      <div style=`height:10px`></div>
-      <label class=`small`>PIN</label>
-      <input id=`pin" class="input" placeholder="4 dígitos" inputmode="numeric" autocomplete="current-password`>
-      <div class=`rowActions" style="margin-top:14px`>
-        <button id=`btnEnter" class="btn btn--green`>Entrar</button>
-        <button id=`btnReset" class="btn btn--danger`>Zerar dados (teste)</button>
-      </div>
-      <div class=`small" style="margin-top:12px`>
-        <b>Logins de teste:</b><br>
-        supervisor_01 (3333) • qualidade_01 (2222)<br>
-        exec_costa_rica (1234) • exec_costa_brava (5678)<br>
-        coordenador (7777) • engenheiro (8888) • diretor (9999)
-      </div>
-    </div>
-  \`;
-
-  $(`#btnEnter").addEventListener("click`, ()=>{
-    const id = $(`#userId`).value.trim();
-    const pin = $(`#pin`).value.trim();
-    const u = (state.users||[]).find(x=>x.id===id && x.active);
-    if(!u){ toast(`Usuário inválido.`); return; }
-    if(u.pin !== pin){ toast(`PIN incorreto.`); return; }
-    setSession(u.id);
-    toast(`Bem-vindo, " + u.name + "!`);
-    if(u.role === `execucao`){
-      const obraId = (u.obraIds||[])[0];
-      router.go(`obra`, { obraId });
-    }else{
-      router.go(`home`);
-    }
-  });
-
-  $(`#btnReset").addEventListener("click`, ()=>{
-    openModal({
-      title: `Zerar dados?`,
-      bodyHTML: \`<div class=`small`>Isso apaga tudo que você marcou nesse protótipo (inclui usuários e obras).</div>\`,
-      actions: [
-        { label:`Cancelar", className:"`, onClick: ()=>{} },
-        { label:`Zerar", className:"btn--danger`, onClick: ()=>{
-            state = seedData();
-            saveState();
-            toast(`Dados zerados.`);
-            router.go(`login`);
-          }
-        }
-      ]
-    });
-  });
-}
-
-
-function upsertObraIndex(entry){
-  const idx = state.obras_index || [];
-  const i = idx.findIndex(x=>x.id===entry.id);
-  if(i>=0) idx[i] = entry;
-  else idx.unshift(entry);
-  state.obras_index = idx;
-}
-
-function removeObra(obraId){
-  delete state.obras[obraId];
-  state.obras_index = (state.obras_index||[]).filter(x=>x.id!==obraId);
-  saveState();
-}
-
-function rebuildObraKeepingData(obraId, { numBlocks, aptsPerBlock }){
-  const old = state.obras[obraId];
-  if(!old) return;
-  const name = old.name;
-  const fresh = createObraData({ obraId, obraName: name, numBlocks, aptsPerBlock });
-
-  // Preserve data where possible (same bloco + same apt number)
-  Object.values(fresh.blocks).forEach(nb=>{
-    const ob = old.blocks?.[nb.id];
-    if(!ob) return;
-    Object.keys(nb.apartments).forEach(apNum=>{
-      const oa = ob.apartments?.[apNum];
-      if(oa){
-        nb.apartments[apNum].pendencias = oa.pendencias || [];
-        nb.apartments[apNum].logs = oa.logs || [];
-      }
-    });
-  });
-
-  state.obras[obraId] = fresh;
-  upsertObraIndex({ id: obraId, name: fresh.name, config: fresh.config });
-  saveState();
-}
-
-function refreshObrasIndex(){
-  state.last_obras_refresh = nowISO();
-  saveState();
-}
-
-
-function openAddObraModal(){
-  const u = currentUser();
-  if(!u) return;
-
-  openModal({
-    title: `Adicionar obra`,
-    bodyHTML: \`
-      <label class=`small`>Nome da obra</label>
-      <input id=`obraName" class="input" placeholder="Ex.: Costa Brava - Entregas`>
-      <div style=`height:10px`></div>
-      <div class=`formRow`>
-        <div>
-          <label class=`small`>Quantidade de blocos</label>
-          <input id=`obraBlocks" class="input" inputmode="numeric" placeholder="Ex.: 17" value="17`>
-        </div>
-        <div>
-          <label class=`small`>Aptos por bloco</label>
-          <select id=`obraApts" class="input`>
-            <option value=`12`>12 (até 304)</option>
-            <option value=`16`>16 (até 404)</option>
-          </select>
-        </div>
-      </div>
-      <div class=`small" style="margin-top:10px`>Obs.: você pode ajustar depois em <b>Configurar</b>.</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Adicionar", className:"btn--green`, onClick: ()=>{
-          const name = $(`#obraName`).value.trim();
-          if(!name){ toast(`Informe o nome da obra.`); return; }
-          const obraId = slugifyObraName(name);
-          const numBlocks = Math.max(1, parseInt($(`#obraBlocks").value || "17`, 10));
-          const aptsPerBlock = parseInt($(`#obraApts").value || "12`, 10);
-
-          if(state.obras[obraId]){
-            toast(`Já existe uma obra com esse identificador. Tente outro nome.`);
-            return;
-          }
-
-          const obra = createObraData({ obraId, obraName: name, numBlocks, aptsPerBlock });
-          state.obras[obraId] = obra;
-          upsertObraIndex({ id: obraId, name: obra.name, config: obra.config });
-          state.last_obras_refresh = nowISO();
-          saveState();
-          toast(`Obra adicionada.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function openEditObraModal(obraId){
-  const u = currentUser();
-  if(!u || u.role !== `supervisor`) return; // only supervisor manages
-  const obra = state.obras[obraId];
-  if(!obra){ toast(`Obra não encontrada.`); return; }
-
-  const cfg = obra.config || {};
-  openModal({
-    title: `Configurar obra`,
-    bodyHTML: \`
-      <div class=`small`>Obra: <b>${escapeHTML(obra.name)}</b></div>
-      <div style=`height:10px`></div>
-      <div class=`formRow`>
-        <div>
-          <label class=`small`>Quantidade de blocos</label>
-          <input id=`edBlocks" class="input" inputmode="numeric" value="${escapeAttr(String(cfg.numBlocks || 17))}`>
-        </div>
-        <div>
-          <label class=`small`>Aptos por bloco</label>
-          <select id=`edApts" class="input`>
-            <option value=`12`>12 (até 304)</option>
-            <option value=`16`>16 (até 404)</option>
-          </select>
-        </div>
-      </div>
-      <div class=`small" style="margin-top:10px`>
-        Ao mudar para <b>12</b>, os aptos 401–404 (se existirem) serão removidos do bloco (pendências desses aptos não serão mantidas).
-      </div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Salvar", className:"btn--green`, onClick: ()=>{
-          const numBlocks = Math.max(1, parseInt($(`#edBlocks").value || "17`, 10));
-          const aptsPerBlock = parseInt($(`#edApts").value || "12`, 10);
-
-          const oldCfg = obra.config || {};
-          const needWarnDrop = (Number(oldCfg.aptsPerBlock) === 16 && Number(aptsPerBlock) === 12);
-
-          const doSave = ()=>{
-            rebuildObraKeepingData(obraId, { numBlocks, aptsPerBlock });
-            toast(`Configuração salva.`);
-            closeModal();
-            render();
-          };
-
-          if(needWarnDrop){
-            openModal({
-              title: `Confirmar redução`,
-              bodyHTML: \`<div class=`small`>Você está mudando de 16 para 12 aptos/bloco. Os aptos <b>401–404</b> serão removidos.</div>\`,
-              actions: [
-                { label:`Cancelar", className:"`, onClick: ()=>{} },
-                { label:`Confirmar", className:"btn--danger`, onClick: doSave }
-              ]
-            });
-            return;
-          }
-
-          doSave();
-        } }
-    ]
-  });
-  setTimeout(()=>{ try{ $(`#edApts`).value = String(cfg.aptsPerBlock || 12); }catch(e){} }, 0);
-}
-
-function confirmDeleteObra(obraId){
-  const u = currentUser();
-  if(!u || u.role !== `supervisor`) return; // only supervisor deletes
-  const obra = state.obras[obraId];
-  if(!obra){ toast(`Obra não encontrada.`); return; }
-
-  openModal({
-    title: `Remover obra`,
-    bodyHTML: \`
-      <div class=`small`>Tem certeza que deseja remover:</div>
-      <div style=`margin-top:6px;font-weight:950;font-size:16px`>${escapeHTML(obra.name)}</div>
-      <div class=`small" style="margin-top:8px;color:#FFD6D6`>Essa ação apaga os dados dessa obra neste aparelho.</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Remover", className:"btn--danger`, onClick: ()=>{
-          removeObra(obraId);
-          toast(`Obra removida.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function renderUsers(){
-  if(!requireLogin()) return;
-  const u = currentUser();
-  if(!canManageUsers(u)){ router.go(`home`); return; }
-  setSubtitle(`Usuários e Acessos`);
-
-  const v = $(`#view`);
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle" style="margin-top:0`>
-        <h2>Usuários</h2>
-        <div class=`hint`>Qualidade e Supervisor criam acessos • Remover (Qualidade/Execução) só Supervisor</div>
-      </div>
-      <div class=`rowActions`>
-        <button id=`btnAddUser" class="btn btn--green`>+ Adicionar usuário</button>
-      </div>
-      <hr class=`hr`>
-      <div class=`list" id="usersList`></div>
-    </div>
-  \`;
-
-  $(`#btnAddUser").addEventListener("click`, ()=> openAddUserModal());
-
-  const list = $(`#usersList`);
-  const users = (state.users||[]).slice().sort((a,b)=> (a.role||`").localeCompare(b.role||"") || (a.name||"").localeCompare(b.name||"`));
-  users.forEach(us=>{
-    const canDel = canDeleteUser(u, us.role);
-    const obraTxt = (us.obraIds||[]).includes(`*") ? "todas" : (us.obraIds||[]).join(", `);
-    const item = document.createElement(`div`);
-    item.className = `item`;
-    item.innerHTML = \`
-      <div class=`item__top`>
-        <div>
-          <div class=`item__title">${escapeHTML(us.name)} <span class="small`>(${escapeHTML(us.id)})</span></div>
-          <div class=`item__meta`>Perfil: <b>${escapeHTML(ROLES[us.role]||us.role)}</b> • Obras: <b>${escapeHTML(obraTxt)}</b></div>
-        </div>
-        <div class=`item__tags`>
-          <span class=`tag tag--cat">${us.active ? "✅ ativo" : "⛔ inativo`}</span>
-        </div>
-      </div>
-      <div class=`rowActions`>
-        <button class=`btn" data-act="pin" data-id="${escapeAttr(us.id)}`>Trocar PIN</button>
-        <button class=`btn" data-act="toggle" data-id="${escapeAttr(us.id)}">${us.active ? "Desativar" : "Ativar`}</button>
-        ${canDel ? \`<button class=`btn btn--danger" data-act="del" data-id="${escapeAttr(us.id)}`>Remover</button>\` : \`\`}
-      </div>
-    \`;
-    list.appendChild(item);
-  });
-
-  list.addEventListener(`click`, (ev)=>{
-    const btn = ev.target.closest(`button[data-act]`);
-    if(!btn) return;
-    const act = btn.getAttribute(`data-act`);
-    const id = btn.getAttribute(`data-id`);
-    const target = (state.users||[]).find(x=>x.id===id);
-    if(!target) return;
-
-    if(act===`pin`) return openSetPinModal(target);
-    if(act===`toggle`) return toggleUserActive(target);
-    if(act===`del`) return confirmDeleteUser(target);
-  });
-}
-
-function openAddUserModal(){
-  const u = currentUser();
-  if(!canManageUsers(u)) return;
-
-  const obraOptions = (state.obras_index||[]).map(o=>\`<option value=`${escapeAttr(o.id)}">${escapeHTML(o.name)}</option>`).join("`);
-  openModal({
-    title: `Adicionar usuário`,
-    bodyHTML: \`
-      <label class=`small`>Usuário (login)</label>
-      <input id=`nuId" class="input" placeholder="Ex.: exec_costa_rica`>
-      <div style=`height:10px`></div>
-      <label class=`small`>Nome</label>
-      <input id=`nuName" class="input" placeholder="Ex.: Execução Costa Rica`>
-      <div style=`height:10px`></div>
-      <div class=`formRow`>
-        <div>
-          <label class=`small`>Perfil</label>
-          <select id=`nuRole" class="input`>
-            <option value=`execucao`>Execução</option>
-            <option value=`qualidade`>Qualidade</option>
-            <option value=`supervisor`>Supervisor Manutenção</option>
-            <option value=`coordenador`>Coordenador</option>
-            <option value=`engenheiro`>Engenheiro Geral</option>
-            <option value=`diretor`>Diretor</option>
-          </select>
-        </div>
-        <div>
-          <label class=`small`>PIN</label>
-          <input id=`nuPin" class="input" placeholder="4 dígitos" inputmode="numeric`>
-        </div>
-      </div>
-      <div style=`height:10px`></div>
-      <div id=`nuObraWrap`>
-        <label class=`small`>Obra (para Execução: obrigatório / 1 obra)</label>
-        <select id=`nuObra" class="input`>${obraOptions}</select>
-      </div>
-      <div class=`small" style="margin-top:10px`>Coordenador/Engenheiro/Diretor ficam em <b>visualização</b> (sem botões de ação).</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Criar", className:"btn--green`, onClick: ()=>{
-          const id = $(`#nuId`).value.trim();
-          const name = $(`#nuName`).value.trim();
-          const role = $(`#nuRole`).value;
-          const pin = $(`#nuPin`).value.trim();
-          if(!id || !name){ toast(`Preencha usuário e nome.`); return; }
-          if((state.users||[]).some(x=>x.id===id)){ toast(`Usuário já existe.`); return; }
-          if(!pin || pin.length < 4){ toast(`PIN mínimo 4 dígitos.`); return; }
-
-          let obraIds = [`*`];
-          if(role === `execucao`){
-            const obraId = $(`#nuObra`).value;
-            if(!obraId){ toast(`Selecione a obra da Execução.`); return; }
-            obraIds = [obraId];
-          }else{
-            obraIds = [`*`];
-          }
-
-          (state.users||[]).push({ id, name, role, pin, obraIds, active:true });
-          saveState();
-          toast(`Usuário criado.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-
-  const roleEl = $(`#nuRole`);
-  const wrap = $(`#nuObraWrap`);
-  const sync = ()=>{ wrap.style.display = (roleEl.value===`execucao") ? "block" : "none`; };
-  roleEl.addEventListener(`change`, sync);
-  sync();
-}
-
-function openSetPinModal(target){
-  const u = currentUser();
-  if(!canManageUsers(u)) return;
-  openModal({
-    title: `Trocar PIN`,
-    bodyHTML: \`
-      <div class=`small`>Usuário: <b>${escapeHTML(target.name)}</b> (${escapeHTML(target.id)})</div>
-      <div style=`height:10px`></div>
-      <label class=`small`>Novo PIN</label>
-      <input id=`newPin" class="input" placeholder="4 dígitos" inputmode="numeric`>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Salvar", className:"btn--green`, onClick: ()=>{
-          const p = $(`#newPin`).value.trim();
-          if(!p || p.length<4){ toast(`PIN mínimo 4 dígitos.`); return; }
-          target.pin = p;
-          saveState();
-          toast(`PIN atualizado.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function toggleUserActive(target){
-  const u = currentUser();
-  if(!canManageUsers(u)) return;
-  if(target.id === state.session?.userId){ toast(`Não é possível desativar seu próprio acesso.`); return; }
-  target.active = !target.active;
-  saveState();
-  toast(target.active ? `Usuário ativado." : "Usuário desativado.`);
+function goto(screen, params={}){
+  nav.screen = screen;
+  nav.params = params;
   render();
 }
 
-function confirmDeleteUser(target){
+function setTopbar(){
   const u = currentUser();
-  if(!canDeleteUser(u, target.role)){ toast(`Apenas Supervisor remove Qualidade/Execução.`); return; }
-  if(target.id === state.session?.userId){ toast(`Não é possível remover seu próprio acesso.`); return; }
-  openModal({
-    title: `Remover usuário`,
-    bodyHTML: \`
-      <div class=`small`>Remover acesso de:</div>
-      <div style=`margin-top:6px;font-weight:950;font-size:16px`>${escapeHTML(target.name)}</div>
-      <div class=`small" style="margin-top:4px`>${escapeHTML(target.id)} • ${escapeHTML(ROLES[target.role]||target.role)}</div>
-      <div class=`small" style="margin-top:8px;color:#FFD6D6`>Essa ação apaga o usuário deste aparelho.</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Remover", className:"btn--danger`, onClick: ()=>{
-          state.users = (state.users||[]).filter(x=>x.id!==target.id);
-          saveState();
-          toast(`Usuário removido.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
+  const chip = $("#userChip");
+  const logout = $("#btnLogout");
+  const back = $("#btnBack");
 
+  if(u){
+    chip.style.display = "inline-flex";
+    chip.textContent = `${u.name} • ${u.role}`;
+    logout.style.display = "inline-flex";
+  }else{
+    chip.style.display = "none";
+    logout.style.display = "none";
+  }
+  // back button
+  const showBack = ["dash","home","obra","apto"].includes(nav.screen) && nav.screen !== "login";
+  back.style.display = showBack ? "inline-flex" : "none";
+  back.onclick = ()=>{
+    if(nav.screen==="apto"){
+      goto("obra", { obraId: nav.params.obraId, blockId: nav.params.blockId });
+    }else if(nav.screen==="obra"){
+      const u2 = currentUser();
+      if(u2 && canViewOnly(u2)) goto("dash");
+      else goto("home");
+    }else if(nav.screen==="home" || nav.screen==="dash"){
+      // no-op
+      toast("Você já está na tela inicial.");
+    }
+  };
+
+  logout.onclick = ()=>{
+    state.session = null;
+    saveState();
+    goto("login");
+  };
+}
 
 function calcObraStats(obraId){
   const obra = state.obras[obraId];
-  if(!obra) return null;
-  let totalApt=0, liberados=0, aguardando=0, pendentes=0;
-  Object.values(obra.blocks||{}).forEach(b=>{
-    Object.values(b.apartments||{}).forEach(a=>{
-      totalApt++;
+  let total=0, conclu=0, aguard=0, pend=0;
+  Object.values(obra.blocks).forEach(b=>{
+    Object.values(b.apartments).forEach(a=>{
+      total++;
       const ps = a.pendencias || [];
-      const hasPendente = ps.some(p=>p.state===`pendente" || p.state==="reprovado`);
-      const hasAguard = ps.some(p=>p.state===`feito`);
-      const allDone = (ps.length>0) && ps.every(p=>p.state===`conferido`);
-      if(allDone) liberados++;
-      else if(hasPendente) pendentes++;
-      else if(hasAguard) aguardando++;
-      // else: sem pendências cadastradas ainda (fica fora dos 3 indicadores)
+      const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
+      const hasPend = ps.some(p=>p.state==="pendente" || p.state==="reprovado");
+      const hasAguard = ps.some(p=>p.state==="feito");
+      if(allDone) conclu++;
+      else if(hasPend) pend++;
+      else if(hasAguard) aguard++;
     });
   });
-  return { obraId, name: obra.name, totalApt, liberados, aguardando, pendentes };
+  return { total, conclu, aguard, pend };
 }
 
-function renderDashboard(){
-  if(!requireLogin()) return;
+function aptStatus(apto){
+  const ps = apto.pendencias || [];
+  const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
+  const hasPend = ps.some(p=>p.state==="pendente" || p.state==="reprovado");
+  const hasAguard = ps.some(p=>p.state==="feito");
+  if(allDone) return { label:"Liberado", dot:"g" };
+  if(hasPend) return { label:"Com pendência", dot:"r" };
+  if(hasAguard) return { label:"Aguardando conferência", dot:"o" };
+  return { label:"Sem pendências", dot:"" };
+}
+
+function render(){
+  setTopbar();
+  const root = $("#app");
   const u = currentUser();
-  setSubtitle(`Visão Geral`);
 
-  const v = $(`#view`);
-  const stats = (state.obras_index||[]).map(o=>calcObraStats(o.id)).filter(Boolean);
+  // first gate
+  if(!u && nav.screen!=="login"){
+    nav.screen="login";
+    nav.params={};
+  }
 
-  const tot = stats.reduce((acc,s)=>({
-    totalApt: acc.totalApt + s.totalApt,
-    liberados: acc.liberados + s.liberados,
-    aguardando: acc.aguardando + s.aguardando,
-    pendentes: acc.pendentes + s.pendentes
-  }), {totalApt:0, liberados:0, aguardando:0, pendentes:0});
+  if(nav.screen==="login") return renderLogin(root);
+  if(nav.screen==="dash") return renderDash(root);
+  if(nav.screen==="home") return renderHome(root);
+  if(nav.screen==="obra") return renderObra(root);
+  if(nav.screen==="apto") return renderApto(root);
 
-  const rows = stats.map(s=>\`
-    <tr>
-      <td style=`padding:10px 8px"><b>${escapeHTML(s.name)}</b><div class="small`>Total: ${s.totalApt}</div></td>
-      <td style=`padding:10px 8px;text-align:center`><b>${s.liberados}</b></td>
-      <td style=`padding:10px 8px;text-align:center`><b>${s.aguardando}</b></td>
-      <td style=`padding:10px 8px;text-align:center`><b>${s.pendentes}</b></td>
-      <td style=`padding:10px 8px;text-align:right"><button class="btn" data-open="${escapeAttr(s.obraId)}`>Abrir</button></td>
-    </tr>
-  \`).join(``);
+  // fallback
+  nav.screen = "login";
+  nav.params = {};
+  return renderLogin(root);
+}
 
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle" style="margin-top:0`>
-        <h2>Resumo geral</h2>
-        <div class=`hint`>Diretor/Engenheiro/Coordenador: somente visualização</div>
+function renderLogin(root){
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="h1">Entrar</div>
+        <div class="small">Usuário + PIN</div>
+        <div class="hr"></div>
+        <div class="grid">
+          <div>
+            <div class="small">Usuário</div>
+            <input id="loginUser" class="input" placeholder="ex.: qualidade_01" autocomplete="username" />
+          </div>
+          <div>
+            <div class="small">PIN</div>
+            <input id="loginPin" class="input" placeholder="ex.: 2222" inputmode="numeric" autocomplete="current-password" />
+          </div>
+          <div class="row">
+            <button id="btnLogin" class="btn btn--orange">Entrar</button>
+            <button id="btnReset" class="btn btn--ghost">Zerar dados</button>
+          </div>
+          <div class="small">Dica: use os logins de teste (qualidade_01/2222, supervisor_01/3333, diretor/9999).</div>
+        </div>
       </div>
 
-      <div class=`kpis`>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${tot.liberados}</div>
-          <div class=`kpi__l`>Concluídos (conferidos)</div>
+      <div class="card">
+        <div class="h2">Obras cadastradas</div>
+        <div class="small">Costa Rica e Costa Brava já vêm prontas.</div>
+        <div class="hr"></div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Obra</th>
+              <th class="small">Blocos</th>
+              <th class="small">Apto/Bloco</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${state.obras_index.map(o=>`
+              <tr>
+                <td><b>${esc(o.name)}</b></td>
+                <td class="small">${o.config.numBlocks}</td>
+                <td class="small">${o.config.aptsPerBlock}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  $("#btnReset").onclick = ()=>{
+    state = seed();
+    saveState();
+    toast("Dados zerados.");
+    render();
+  };
+
+  $("#btnLogin").onclick = ()=>{
+    const id = ($("#loginUser").value||"").trim();
+    const pin = ($("#loginPin").value||"").trim();
+    const user = state.users.find(u=>u.id===id && u.active);
+    if(!user){ toast("Usuário inválido"); return; }
+    if(user.pin !== pin){ toast("PIN incorreto"); return; }
+    state.session = { userId: user.id };
+    saveState();
+    // route
+    if(user.role==="execucao"){
+      const obraId = (user.obraIds||[])[0];
+      goto("obra", { obraId });
+    }else if(canViewOnly(user)){
+      goto("dash");
+    }else{
+      goto("home");
+    }
+  };
+}
+
+function renderDash(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+  if(!canViewOnly(u)) return goto("home");
+
+  const stats = state.obras_index.map(o=>{
+    const s = calcObraStats(o.id);
+    return { id:o.id, name:o.name, ...s };
+  });
+  const total = stats.reduce((a,s)=>({ total:a.total+s.total, conclu:a.conclu+s.conclu, aguard:a.aguard+s.aguard, pend:a.pend+s.pend }), {total:0, conclu:0, aguard:0, pend:0});
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">Visão Geral</div>
+          <div class="small">Somatório de todas as obras</div>
         </div>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${tot.aguardando}</div>
-          <div class=`kpi__l`>Aguardando conferência</div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpi__v">${total.conclu}</div>
+          <div class="kpi__l">Concluídos (conferidos)</div>
         </div>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${tot.pendentes}</div>
-          <div class=`kpi__l`>Com pendência</div>
+        <div class="kpi">
+          <div class="kpi__v">${total.aguard}</div>
+          <div class="kpi__l">Aguardando conferência</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.pend}</div>
+          <div class="kpi__l">Com pendência</div>
         </div>
       </div>
 
-      <div class=`small" style="margin-top:10px`>Total de apartamentos cadastrados: <b>${tot.totalApt}</b></div>
+      <div class="hr"></div>
 
-      <hr class=`hr`>
-
-      <table style=`width:100%;border-collapse:collapse`>
+      <table class="table">
         <thead>
           <tr>
-            <th style=`text-align:left;padding:8px" class="small`>Obra</th>
-            <th style=`text-align:center;padding:8px" class="small`>Concluídos</th>
-            <th style=`text-align:center;padding:8px" class="small`>Aguardando</th>
-            <th style=`text-align:center;padding:8px" class="small`>Pendência</th>
-            <th style=`text-align:right;padding:8px" class="small`></th>
+            <th>Obra</th>
+            <th class="small" style="text-align:center">Concluídos</th>
+            <th class="small" style="text-align:center">Aguardando</th>
+            <th class="small" style="text-align:center">Pendência</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          ${rows || \`<tr><td colspan=`5" class="small" style="padding:10px`>Nenhuma obra cadastrada.</td></tr>\`}
+          ${stats.map(s=>`
+            <tr>
+              <td><b>${esc(s.name)}</b><div class="small">Total: ${s.total}</div></td>
+              <td style="text-align:center"><b>${s.conclu}</b></td>
+              <td style="text-align:center"><b>${s.aguard}</b></td>
+              <td style="text-align:center"><b>${s.pend}</b></td>
+              <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
+            </tr>
+          `).join("")}
         </tbody>
       </table>
     </div>
-  \`;
+  `;
 
-  v.querySelectorAll(`button[data-open]`).forEach(btn=>{
-    btn.addEventListener(`click`, ()=>{
-      const obraId = btn.getAttribute(`data-open`);
-      router.go(`obra`, { obraId });
-    });
+  $$('button[data-open]').forEach(b=>{
+    b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
   });
 }
 
-function renderHome(){
-  if(!requireLogin()) return;
-  setSubtitle(`Obras`);
-  const v = $(`#view`);
-  const last = state.last_obras_refresh ? fmtDT(state.last_obras_refresh) : `—`;
-
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle" style="margin-top:0`>
-        <h2>Selecione a obra</h2>
-        <span class=`badge badge--orange`>Atualizado: ${escapeHTML(last)}</span>
-      </div>
-      <div class=`rowActions`>
-        <button id=`btnRefreshObras" class="btn btn--orange`>Atualizar obras</button>
-        ${(currentUser() && currentUser().role!== `execucao") ? `<button id="btnDash" class="btn`>Visão Geral</button>\` : \`\`}
-        ${canAddObra(currentUser()) ? \`<button id=`btnAddObra" class="btn btn--green`>+ Adicionar obra</button>\` : \`\`}
-        ${canManageUsers(currentUser()) ? \`<button id=`btnUsers" class="btn`>Usuários</button>\` : \`\`}
-      </div>
-      <hr class=`hr`>
-      <div class=`grid" id="obrasList`></div>
-    </div>
-  \`;
-
-  $(`#btnRefreshObras").addEventListener("click`, ()=>{
-    refreshObrasIndex();
-    toast(`Obras atualizadas.`);
-    render();
-  });
-
-  if($(`#btnAddObra")) $("#btnAddObra").addEventListener("click`, ()=> openAddObraModal());
-  if($(`#btnUsers")) $("#btnUsers").addEventListener("click", ()=> router.go("users`));
-  if($(`#btnDash")) $("#btnDash").addEventListener("click", ()=> router.go("dash`));
-
-  const list = $(`#obrasList`);
-
-  function removeObra(obraId){
-    const u = currentUser();
-    if(!canDeleteObra(u)){
-      toast(`Apenas Supervisor pode remover obra.`);
-      return;
-    }
-    openModal({
-      title: `Remover obra?`,
-      bodyHTML: \`<div class=`small`>Isso apagará a obra e todas as pendências dela no protótipo.</div>\`,
-      actions: [
-        { label:`Cancelar", className:"`, onClick: ()=>{} },
-        { label:`Remover", className:"btn--danger`, onClick: ()=>{
-            delete state.obras[obraId];
-            state.obras_index = state.obras_index.filter(x=>x.id !== obraId);
-            saveState();
-            toast(`Obra removida.`);
-            closeModal();
-            render();
-          } }
-      ]
-    });
-  }
-
-  list.addEventListener(`click`, (e)=>{
-    const openBtn = e.target.closest(`button[data-open-obra]`);
-    const delBtn = e.target.closest(`button[data-del-obra]`);
-    if(openBtn){
-      const id = openBtn.getAttribute(`data-open-obra`);
-      router.go(`obra`, { obraId:id });
-      return;
-    }
-    if(delBtn){
-      const id = delBtn.getAttribute(`data-del-obra`);
-      removeObra(id);
-      return;
-    }
-  });
-
-  ( (function(){ const u=currentUser(); const idx=state.obras_index||[]; if(!u) return idx; if(u.role==='execucao') return idx.filter(x=>(u.obraIds||[]).includes(x.id)); return idx; })() ).forEach(o=>{
-    const el = document.createElement(`div`);
-    el.className = `card`;
-    el.style.cursor = `pointer`;
-
-    const cfg = o.config || state.obras?.[o.id]?.config || {};
-    const blocks = cfg.numBlocks ?? 17;
-    const aptsPerBlock = cfg.aptsPerBlock ?? 12;
-
-    const u = currentUser();
-    const canDelete = (u && u.role === `supervisor`);
-
-    el.innerHTML = \`
-      <div class=`sectionTitle" style="margin:0 0 6px`>
-        <h2 style=`font-size:16px`>${escapeHTML(o.name)}</h2>
-        <span class=`badge badge--green`>PWA</span>
-      </div>
-      <div class=`small`>Blocos: <b>${blocks}</b> • Aptos/Bloco: <b>${aptsPerBlock}</b></div>
-      ${canDelete ? \`
-        <div class=`rowActions" style="margin-top:10px`>
-          <button class=`btn" data-act="editObra" data-obra="${escapeAttr(o.id)}`>Configurar</button>
-          <button class=`btn btn--danger" data-act="delObra" data-obra="${escapeAttr(o.id)}`>Remover</button>
-        </div>
-      \` : \`<div class=`small" style="margin-top:8px`>Toque para abrir</div>\`}
-    \`;
-
-    // click to open only when not clicking buttons
-    el.addEventListener(`click`, (ev)=>{
-      const btn = ev.target.closest(`button[data-act]`);
-      if(btn) return;
-      router.go(`obra`, { obraId:o.id });
-    });
-
-    list.appendChild(el);
-  });
-}
-
-function renderObra({obraId}){
-  if(!requireLogin()) return;
-  const obra = state.obras[obraId];
-  setSubtitle(`Obra • ` + obra.name);
-
-  const blocks = Object.values(obra.blocks);
-  let totalApt=0, liberados=0, aguardando=0, pendentes=0;
-  blocks.forEach(b=>{
-    Object.values(b.apartments).forEach(a=>{
-      totalApt++;
-      const st = aptStatus(a);
-      if(st===`liberado`) liberados++;
-      else if(st===`aguardando`) aguardando++;
-      else pendentes++;
-    });
-  });
-
-  const v = $(`#view`);
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle`>
-        <h2>${escapeHTML(obra.name)} — Blocos</h2>
-        <div class=`hint`>Blocos 1 a 17</div>
-      </div>
-      <div class=`kpis`>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${liberados}</div>
-          <div class=`kpi__l`>Concluídos (conferidos)</div>
-        </div>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${aguardando}</div>
-          <div class=`kpi__l`>Aguardando conferência</div>
-        </div>
-        <div class=`kpi`>
-          <div class=`kpi__v`>${pendentes}</div>
-          <div class=`kpi__l`>Com pendência</div>
-        </div>
-      </div>
-      <div class=`small" style="margin-top:8px`>Total de aptos: <b>${totalApt}</b></div>
-      <hr class=`hr`>
-      <div class=`grid" id="blocks`></div>
-    </div>
-  \`;
-
-  const list = $(`#blocks`);
-  blocks.forEach((b)=>{
-    let bTotal=0, bOk=0, bWait=0, bBad=0;
-    Object.values(b.apartments).forEach(a=>{
-      bTotal++;
-      const st = aptStatus(a);
-      if(st===`liberado`) bOk++;
-      else if(st===`aguardando`) bWait++;
-      else bBad++;
-    });
-
-    const el = document.createElement(`div`);
-    el.className = `card`;
-    el.style.cursor = `default`;
-    el.innerHTML = \`
-      <div class=`sectionTitle" style="margin:0 0 6px`>
-        <h2 style=`font-size:16px`>${escapeHTML(b.name)}</h2>
-        <span class=`badge badge--green`>✅ ${bOk}</span>
-      </div>
-      <div class=`small`>Aptos: ${bTotal} • 🟡 ${bWait} • 🔴 ${bBad}</div>
-      <div class=`small" style="margin-top:8px`>Toque para abrir</div>
-    \`;
-    el.addEventListener(`click", ()=> router.go("bloco`, { obraId, blocoId: b.id }));
-    list.appendChild(el);
-  });
-}
-
-function renderBloco({obraId, blocoId}){
-  if(!requireLogin()) return;
-  const obra = state.obras[obraId];
-  const bloco = obra.blocks[blocoId];
-  setSubtitle(\`Obra • ${obra.name} • ${bloco.name}\`);
-
-  const cfg = obra.config || { aptsPerBlock: 12 };
-  const levels = [
-    { label:`Térreo`, nums:[101,102,103,104] },
-    { label:`1º pav`, nums:[201,202,203,204] },
-    { label:`2º pav`, nums:[301,302,303,304] }
-  ];
-  if(Number(cfg.aptsPerBlock) === 16){
-    levels.push({ label:`3º pav`, nums:[401,402,403,404] });
-  }
-
-  const v = $(`#view`);
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle`>
-        <h2>${escapeHTML(bloco.name)}</h2>
-        <div class=`hint`>12 aptos • toque para abrir</div>
-      </div>
-      <div id=`levels`></div>
-      <hr class=`hr`>
-      <div class=`small`>Legenda: 🔴 pendente • 🟡 aguardando vistoria • ✅ liberado</div>
-    </div>
-  \`;
-
-  const wrap = $(`#levels`);
-  levels.forEach(l=>{
-    const row = document.createElement(`div`);
-    row.innerHTML = \`<div class=`aptRowTitle">${escapeHTML(l.label)}</div><div class="aptGrid`></div>\`;
-    const grid = row.querySelector(`.aptGrid`);
-    l.nums.forEach(n=>{
-      const apt = bloco.apartments[String(n)];
-      const st = aptStatus(apt);
-      const openCount = openCountForApt(apt);
-      const el = document.createElement(`div`);
-      el.className = `aptCard`;
-      el.innerHTML = \`
-        <div class=`aptTop`>
-          <div class=`aptNum`>${n}</div>
-          <div class=`${statusDotClass(st)}`></div>
-        </div>
-        <div style=`display:flex; align-items:center; justify-content:space-between; gap:8px`>
-          ${statusBadge(st, openCount)}
-          <span class=`badge badge--orange`>📋 ${apt.pendencias.length}</span>
-        </div>
-      \`;
-      el.addEventListener(`click", ()=> router.go("apto`, { obraId, blocoId, apto: String(n) }));
-      grid.appendChild(el);
-    });
-    wrap.appendChild(row);
-  });
-}
-
-function stateTag(p){
-  if(p.state===`pendente") return `<span class="tag tag--state-red`>🔴 ${STATE_LABEL[p.state]}</span>\`;
-  if(p.state===`feito") return `<span class="tag tag--state-yellow`>🟡 ${STATE_LABEL[p.state]}</span>\`;
-  if(p.state===`conferido") return `<span class="tag tag--state-green`>✅ ${STATE_LABEL[p.state]}</span>\`;
-  if(p.state===`reprovado") return `<span class="tag tag--state-red`>❌ ${STATE_LABEL[p.state]}</span>\`;
-  if(p.state===`reaberto") return `<span class="tag tag--state-orange`>♻️ ${STATE_LABEL[p.state]}</span>\`;
-  return \`<span class=`tag`>${escapeHTML(p.state)}</span>\`;
-}
-
-function renderApto({obraId, blocoId, apto}){
-  if(!requireLogin()) return;
-  const obra = state.obras[obraId];
-  const bloco = obra.blocks[blocoId];
-  const apt = bloco.apartments[String(apto)];
+function renderHome(root){
   const u = currentUser();
+  if(!u) return goto("login");
+  if(canViewOnly(u)) return goto("dash");
+
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="h1">Obras</div>
+            <div class="small">Selecione uma obra para ver blocos e apartamentos.</div>
+          </div>
+          <div class="row" style="gap:8px">
+            <button id="btnDash" class="btn">Visão Geral</button>
+            <button id="btnReset2" class="btn btn--ghost">Zerar dados</button>
+          </div>
+        </div>
+        <div class="hr"></div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Obra</th>
+              <th class="small" style="text-align:center">Concluídos</th>
+              <th class="small" style="text-align:center">Aguardando</th>
+              <th class="small" style="text-align:center">Pendência</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${state.obras_index.map(o=>{
+              const s = calcObraStats(o.id);
+              return `
+                <tr>
+                  <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
+                  <td style="text-align:center"><b>${s.conclu}</b></td>
+                  <td style="text-align:center"><b>${s.aguard}</b></td>
+                  <td style="text-align:center"><b>${s.pend}</b></td>
+                  <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="h2">Permissões</div>
+        <div class="small">Regras principais do protótipo.</div>
+        <div class="hr"></div>
+        <div class="pills">
+          <span class="badge"><span class="dot dot--o"></span> Aguardando</span>
+          <span class="badge"><span class="dot dot--r"></span> Pendência</span>
+          <span class="badge"><span class="dot dot--g"></span> Concluído</span>
+        </div>
+        <div class="hr"></div>
+        <div class="small">
+          <b>Qualidade / Supervisor</b>: adicionam pendências. Supervisor confere (aprovar/reprovar). Qualidade pode reabrir.<br><br>
+          <b>Execução</b>: só marca como FEITO na obra vinculada.<br><br>
+          <b>Diretor / Engenheiro / Coordenador</b>: só visualização.
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("#btnDash").onclick = ()=> goto("dash");
+  $("#btnReset2").onclick = ()=>{
+    state = seed();
+    saveState();
+    toast("Dados zerados.");
+    goto("home");
+  };
+  $$('button[data-open]').forEach(b=>{
+    b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
+  });
+}
+
+function renderObra(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obraId = nav.params.obraId;
+  const obra = state.obras[obraId];
+  if(!obra){ toast("Obra não encontrada"); return goto(canViewOnly(u) ? "dash" : "home"); }
+
+  // execução só pode na obra vinculada
+  if(u.role==="execucao" && !(u.obraIds||[]).includes(obraId)){
+    toast("Sem permissão.");
+    return goto("login");
+  }
+
+  const blocks = Object.keys(obra.blocks);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">${esc(obra.name)}</div>
+          <div class="small">${obra.config.numBlocks} blocos • ${obra.config.aptsPerBlock} apto/bloco</div>
+        </div>
+        <div class="row" style="gap:8px">
+          ${canViewOnly(u) ? "" : `<button class="btn" id="btnHome">Obras</button>`}
+          <button class="btn" id="btnDash2">Visão Geral</button>
+        </div>
+      </div>
+
+      <div class="hr"></div>
+      <div class="small">Escolha o bloco:</div>
+      <div class="pills" id="blockPills">
+        ${blocks.map(b=>`<div class="pill" data-b="${b}">${b.replace("B","Bloco ")}</div>`).join("")}
+      </div>
+    </div>
+
+    <div style="height:12px"></div>
+
+    <div class="card" id="blockArea">
+      <div class="small">Selecione um bloco acima.</div>
+    </div>
+  `;
+
+  if($("#btnHome")) $("#btnHome").onclick = ()=> goto("home");
+  $("#btnDash2").onclick = ()=> goto("dash");
+
+  const blockArea = $("#blockArea");
+  $$('#blockPills .pill').forEach(p=>{
+    p.onclick = ()=>{
+      $$('#blockPills .pill').forEach(x=>x.classList.remove("pill--active"));
+      p.classList.add("pill--active");
+      const blockId = p.getAttribute("data-b");
+      renderBlock(blockArea, obraId, blockId);
+    };
+  });
+}
+
+function renderBlock(container, obraId, blockId){
+  const obra = state.obras[obraId];
+  const block = obra.blocks[blockId];
+  const u = currentUser();
+
+  const apts = Object.values(block.apartments).sort((a,b)=>Number(a.num)-Number(b.num));
+
+  container.innerHTML = `
+    <div class="row">
+      <div>
+        <div class="h2">${blockId.replace("B","Bloco ")}</div>
+        <div class="small">Toque em um apartamento para ver pendências.</div>
+      </div>
+      <div class="small">Legenda: <span class="badge"><span class="dot dot--g"></span> ok</span></div>
+    </div>
+    <div class="hr"></div>
+    <div class="apts">
+      ${apts.map(a=>{
+        const st = aptStatus(a);
+        const dot = st.dot ? `<span class="dot dot--${st.dot}"></span>` : `<span class="dot" style="background:rgba(255,255,255,.12)"></span>`;
+        const ok = st.dot==="g" ? "✓" : "";
+        return `
+          <div class="apt" data-ap="${esc(a.num)}">
+            <div class="row" style="align-items:flex-start">
+              <div class="apt__n">${esc(a.num)}</div>
+              <div style="font-weight:900;color:rgba(255,255,255,.8)">${ok}</div>
+            </div>
+            <div class="apt__s">${dot}<span>${esc(st.label)}</span></div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+
+  $$('.apt', container).forEach(el=>{
+    el.onclick = ()=>{
+      const apto = el.getAttribute("data-ap");
+      goto("apto", { obraId, blockId, apto });
+    };
+  });
+}
+
+function renderApto(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const { obraId, blockId, apto } = nav.params;
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  const apt = block?.apartments?.[apto];
+  if(!apt){ toast("Apartamento não encontrado"); return goto("obra",{ obraId }); }
+
+  // execução só pode na obra vinculada
+  if(u.role==="execucao" && !(u.obraIds||[]).includes(obraId)){
+    toast("Sem permissão.");
+    return goto("login");
+  }
 
   const st = aptStatus(apt);
-  const stLabel = st===`liberado" ? "✅ LIBERADO" : (st==="aguardando" ? "🟡 AGUARDANDO VISTORIA" : "🔴 PENDENTE`);
 
-  setSubtitle(\`Obra • ${obra.name} • ${bloco.name} • Apto ${apto}\`);
-
-  const v = $(`#view`);
-  v.innerHTML = \`
-    <div class=`card`>
-      <div class=`sectionTitle`>
-        <h2>${escapeHTML(bloco.name)} — Apto ${escapeHTML(apto)}</h2>
-        <span class=`badge ${st==="liberado" ? "badge--green" : (st==="aguardando" ? "badge--yellow" : "badge--red")}`>${stLabel}</span>
-      </div>
-
-      <div class=`rowActions`>
-        ${canCreate(u) ? \`<button id=`btnAdd" class="btn btn--orange`>+ Nova pendência</button>\` : \`\`}
-        <button id=`btnLogs" class="btn`>Histórico</button>
-      </div>
-
-      <hr class=`hr`>
-
-      <div class=`sectionTitle" style="margin-top:0`>
-        <h2>Pendências</h2>
-        <div class=`hint`>${apt.pendencias.length} item(ns)</div>
-      </div>
-
-      <div id=`list" class="list`></div>
-      ${apt.pendencias.length===0 ? \`<div class=`small">Sem pendências cadastradas. ${canCreate(u) ? "Clique em <b>Nova pendência</b> para adicionar." : "`}</div>\` : \`\`}
-    </div>
-  \`;
-
-  if(canCreate(u)) $(`#btnAdd").addEventListener("click`, ()=> openAddPendencia({obraId, blocoId, apto}));
-  $(`#btnLogs").addEventListener("click`, ()=> openLogs(apt));
-
-  const list = $(`#list`);
-  apt.pendencias
-    .slice()
-    .sort((a,b)=> {
-      const order = { pendente:0, reprovado:1, reaberto:2, feito:3, conferido:4 };
-      return (order[a.state] ?? 99) - (order[b.state] ?? 99);
-    })
-    .forEach(p=>{
-      const el = document.createElement(`div`);
-      el.className = `item`;
-
-      const created = \`${p.createdBy?.name || `—`} • ${fmtDT(p.createdAt)}\`;
-      const done = p.doneAt ? \`${p.doneBy?.name || `—"} • ${fmtDT(p.doneAt)}` : "—`;
-      const reviewed = p.reviewedAt ? \`${p.reviewedBy?.name || `—"} • ${fmtDT(p.reviewedAt)}` : "—`;
-
-      const rejectionBlock = p.rejection ? \`
-        <div style=`margin-top:10px`>
-          <div class=`small" style="color:#FFD6D6;font-weight:900`>Reprovação</div>
-          <div class=`small`>Motivo: <b>${escapeHTML(p.rejection.reason)}</b></div>
-          ${p.rejection.note ? \`<div class=`small`>Obs.: ${escapeHTML(p.rejection.note)}</div>\` : \`\`}
-          <div class=`small`>Por: ${escapeHTML(p.rejection.by)} • ${fmtDT(p.rejection.at)}</div>
-        </div>
-      \` : \`\`;
-
-      el.innerHTML = \`
-        <div class=`item__top`>
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="row">
           <div>
-            <div class=`item__title`>${escapeHTML(p.title)}</div>
-            <div class=`item__meta`>Criado: ${escapeHTML(created)}</div>
+            <div class="h1">${esc(obra.name)}</div>
+            <div class="small">${blockId.replace("B","Bloco ")} • Apto ${esc(apto)}</div>
           </div>
-          <div class=`item__tags`>
-            ${stateTag(p)}
+          <div class="badge">
+            ${st.dot ? `<span class="dot dot--${st.dot}"></span>` : `<span class="dot" style="background:rgba(255,255,255,.12)"></span>`}
+            <span>${esc(st.label)}</span>
           </div>
         </div>
 
-        <div class=`item__tags`>
-          <span class=`tag tag--cat">🏷 ${escapeHTML(p.category || "Sem categoria`)}</span>
-          <span class=`tag tag--loc">📍 ${escapeHTML(p.location || "Sem local`)}</span>
+        <div class="hr"></div>
+
+        <div class="row">
+          <div class="h2">Pendências</div>
+          ${canCreate(u) ? `<button id="btnAddPend" class="btn btn--orange">+ Adicionar</button>` : ``}
         </div>
 
-        <div class=`small" style="margin-top:8px`>
-          <div>Feito: <b>${escapeHTML(done)}</b></div>
-          <div>Conferido: <b>${escapeHTML(reviewed)}</b></div>
-        </div>
+        <div class="hr"></div>
 
-        ${rejectionBlock}
+        <div id="pendList" class="grid"></div>
+      </div>
 
-        <div class=`rowActions`>
-          ${renderItemActions(u, p)}
-        </div>
-      \`;
-      list.appendChild(el);
-    });
-
-  attachItemActionHandlers(); // safe to call
-}
-
-function renderItemActions(u, p){
-  const parts = [];
-  if(canMarkDone(u) && [`pendente","reprovado","reaberto`].includes(p.state)){
-    parts.push(\`<button class=`btn btn--green" data-act="done" data-id="${p.id}`>Marcar FEITO</button>\`);
-  }
-  if(canReview(u) && p.state === `feito`){
-    parts.push(\`<button class=`btn btn--green" data-act="approve" data-id="${p.id}`>CONFERIR</button>\`);
-    parts.push(\`<button class=`btn btn--danger" data-act="reject" data-id="${p.id}`>REPROVAR</button>\`);
-  }
-  if(canReopen(u) && [`conferido","feito`].includes(p.state)){
-    parts.push(\`<button class=`btn btn--orange" data-act="reopen" data-id="${p.id}`>REABRIR</button>\`);
-  }
-  if(canCreate(u)){
-    parts.push(\`<button class=`btn" data-act="edit" data-id="${p.id}`>Editar</button>\`);
-  }
-  return parts.join(`") || `<span class="small`>Sem ações para seu perfil.</span>\`;
-}
-
-// Delegated click handler (one-time)
-let delegatedReady = false;
-function attachItemActionHandlers(){
-  const v = $(`#view`);
-  if(delegatedReady || !v) return;
-  delegatedReady = true;
-
-  v.addEventListener(`click`, (e)=>{
-    const btn = e.target.closest(`button[data-act]`);
-    if(!btn) return;
-    const act = btn.getAttribute(`data-act`);
-    const id = btn.getAttribute(`data-id`);
-
-    const cur = router.current();
-    const {obraId, blocoId, apto} = cur.params || {};
-    if(!obraId || !blocoId || !apto) return;
-
-    const aptObj = getApartment(obraId, blocoId, apto);
-    const p = aptObj.pendencias.find(x=>x.id===id);
-    if(!p) return;
-
-    if(act===`done`) return actionDone(aptObj, p);
-    if(act===`approve`) return actionApprove(aptObj, p);
-    if(act===`reject`) return actionReject(aptObj, p);
-    if(act===`reopen`) return actionReopen(aptObj, p);
-    if(act===`edit`) return actionEdit(aptObj, p);
-  }, { passive:true });
-}
-
-function actionDone(apt, p){
-  const u = currentUser();
-  if(!canMarkDone(u)) return;
-  p.state = `feito`;
-  p.doneBy = { name: u.name, role: u.role };
-  p.doneAt = nowISO();
-  p.rejection = null;
-  logAction(apt, \`Marcou FEITO: ${p.title}\`);
-  saveState();
-  toast(`Marcado como FEITO.`);
-  render();
-}
-
-function actionApprove(apt, p){
-  const u = currentUser();
-  if(!canReview(u)) return;
-  p.state = `conferido`;
-  p.reviewedBy = { name: u.name, role: u.role };
-  p.reviewedAt = nowISO();
-  p.rejection = null;
-  logAction(apt, \`Conferiu (APROVADO): ${p.title}\`);
-  saveState();
-  toast(`Conferido ✅`);
-  render();
-}
-
-function actionReject(apt, p){
-  const u = currentUser();
-  if(!canReview(u)) return;
-
-  openModal({
-    title: `Reprovar pendência`,
-    bodyHTML: \`
-      <div class=`small`>Pendência: <b>${escapeHTML(p.title)}</b></div>
-      <div style=`height:10px`></div>
-      <label class=`small`>Motivo (obrigatório)</label>
-      <input id=`rejReason" class="input" placeholder="Ex.: ainda com vazamento`>
-      <div style=`height:10px`></div>
-      <label class=`small`>Observação (opcional)</label>
-      <textarea id=`rejNote" class="input" placeholder="Detalhe o que precisa ser corrigido...`></textarea>
-      <div class=`small" style="margin-top:8px`>Ao reprovar, o item volta a exigir ação da Execução.</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Reprovar", className:"btn--danger`, onClick: ()=>{
-          const reason = $(`#rejReason`).value.trim();
-          const note = $(`#rejNote`).value.trim();
-          if(!reason){ toast(`Informe o motivo.`); return; }
-
-          p.state = `reprovado`;
-          p.rejection = { reason, note, by: \`${u.name}\`, at: nowISO() };
-          p.reviewedBy = { name: u.name, role: u.role };
-          p.reviewedAt = nowISO();
-
-          logAction(apt, \`Reprovou: ${p.title} • Motivo: ${reason}\`);
-          saveState();
-          toast(`Reprovado ❌`);
-          // Close modal explicitly before rerender (iPhone)
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function actionReopen(apt, p){
-  const u = currentUser();
-  if(!canReopen(u)) return;
-  p.state = `reaberto`;
-  p.reopenedAt = nowISO();
-  p.rejection = null;
-  logAction(apt, \`Reabriu: ${p.title}\`);
-  saveState();
-  toast(`Reaberto ♻️`);
-  render();
-}
-
-function actionEdit(apt, p){
-  const u = currentUser();
-  if(!canCreate(u)) return;
-  openModal({
-    title: `Editar pendência`,
-    bodyHTML: \`
-      <label class=`small`>Título</label>
-      <input id=`edTitle" class="input" value="${escapeAttr(p.title)}`>
-      <div style=`height:10px`></div>
-      <div class=`formRow`>
-        <div>
-          <label class=`small`>Categoria</label>
-          <input id=`edCat" class="input" value="${escapeAttr(p.category||"")}`>
-        </div>
-        <div>
-          <label class=`small`>Local</label>
-          <input id=`edLoc" class="input" value="${escapeAttr(p.location||"")}`>
+      <div class="card">
+        <div class="h2">Ações</div>
+        <div class="small">Permissões por perfil.</div>
+        <div class="hr"></div>
+        <div class="small">
+          <b>Execução</b>: marcar como FEITO.<br>
+          <b>Supervisor</b>: aprovar/reprovar (conferência).<br>
+          <b>Qualidade/Supervisor</b>: reabrir.
         </div>
       </div>
-      <div class=`small" style="margin-top:8px`>A edição fica registrada no histórico.</div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Salvar", className:"btn--green`, onClick: ()=>{
-          const t = $(`#edTitle`).value.trim();
-          if(!t){ toast(`Título obrigatório.`); return; }
-          p.title = t;
-          p.category = $(`#edCat`).value.trim();
-          p.location = $(`#edLoc`).value.trim();
-          logAction(apt, \`Editou: ${p.title}\`);
-          saveState();
-          toast(`Salvo.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function openAddPendencia({obraId, blocoId, apto}){
-  const u = currentUser();
-  if(!canCreate(u)) return;
-
-  openModal({
-    title: `Nova pendência`,
-    bodyHTML: \`
-      <div class=`small`>Apto <b>${escapeHTML(apto)}</b> — ${escapeHTML(state.obras[obraId].blocks[blocoId].name)}</div>
-      <div style=`height:10px`></div>
-      <label class=`small`>Título (obrigatório)</label>
-      <input id=`pTitle" class="input" placeholder="Ex.: Vazamento no registro do banho`>
-      <div style=`height:10px`></div>
-      <div class=`formRow`>
-        <div>
-          <label class=`small`>Categoria</label>
-          <input id=`pCat" class="input" placeholder="Ex.: Hidráulica`>
-        </div>
-        <div>
-          <label class=`small`>Local</label>
-          <input id=`pLoc" class="input" placeholder="Ex.: Banheiro`>
-        </div>
-      </div>
-      <div class=`small" style="margin-top:8px`>Criado por: <b>${escapeHTML(u.name)} (${escapeHTML(ROLES[u.role])})</b></div>
-    \`,
-    actions: [
-      { label:`Cancelar", className:"`, onClick: ()=>{} },
-      { label:`Adicionar", className:"btn--orange`, onClick: ()=>{
-          const title = $(`#pTitle`).value.trim();
-          if(!title){ toast(`Título obrigatório.`); return; }
-          const aptObj = getApartment(obraId, blocoId, apto);
-          const p = {
-            id: uid(`p`),
-            title,
-            category: $(`#pCat`).value.trim(),
-            location: $(`#pLoc`).value.trim(),
-            state: `pendente`,
-            createdBy: { name: u.name, role: u.role },
-            createdAt: nowISO(),
-            doneBy: null, doneAt: null,
-            reviewedBy: null, reviewedAt: null,
-            rejection: null,
-            reopenedAt: null
-          };
-          aptObj.pendencias.unshift(p);
-          logAction(aptObj, \`Criou pendência: ${title}\`);
-          saveState();
-          toast(`Pendência adicionada.`);
-          closeModal();
-          render();
-        } }
-    ]
-  });
-}
-
-function openLogs(apt){
-  const logs = apt.logs || [];
-  const html = logs.length ? logs.map(l=>\`
-    <div class=`item" style="box-shadow:none`>
-      <div style=`font-weight:900`>${escapeHTML(l.who)}</div>
-      <div class=`small`>${fmtDT(l.at)}</div>
-      <div style=`margin-top:6px`>${escapeHTML(l.action)}</div>
     </div>
-  \`).join(`") : `<div class="small`>Sem histórico ainda.</div>\`;
+  `;
 
-  openModal({
-    title: `Histórico do apartamento`,
-    bodyHTML: \`<div class=`list`>${html}</div>\`,
-    actions: [{ label:`Fechar", className:"`, onClick: ()=>{} }]
+  if($("#btnAddPend")){
+    $("#btnAddPend").onclick = ()=> openAddPendencia(obraId, blockId, apto);
+  }
+
+  renderPendencias($("#pendList"), obraId, blockId, apto);
+}
+
+function renderPendencias(container, obraId, blockId, apto){
+  const u = currentUser();
+  const apt = state.obras[obraId].blocks[blockId].apartments[apto];
+  const ps = apt.pendencias || [];
+
+  if(ps.length===0){
+    container.innerHTML = `<div class="small">Nenhuma pendência cadastrada.</div>`;
+    return;
+  }
+
+  container.innerHTML = ps.map(p=>{
+    const badge = (p.state==="conferido") ? `<span class="badge"><span class="dot dot--g"></span> Conferido</span>`
+                : (p.state==="feito") ? `<span class="badge"><span class="dot dot--o"></span> Feito</span>`
+                : (p.state==="reprovado") ? `<span class="badge"><span class="dot dot--r"></span> Reprovado</span>`
+                : `<span class="badge"><span class="dot dot--r"></span> Pendente</span>`;
+
+    const canDo = canMarkDone(u) && (p.state==="pendente" || p.state==="reprovado");
+    const canApprove = canReview(u) && (p.state==="feito");
+    const canReopenP = canReopen(u) && (p.state==="reprovado" || p.state==="feito" || p.state==="conferido");
+
+    return `
+      <div class="card" style="padding:12px">
+        <div class="row">
+          <div>
+            <div style="font-weight:900">${esc(p.title)}</div>
+            <div class="small">${esc(p.category||"")} ${p.location ? "• "+esc(p.location) : ""}</div>
+            <div class="small">Criado por: <b>${esc(p.createdBy?.name||"-")}</b></div>
+          </div>
+          ${badge}
+        </div>
+
+        <div class="hr" style="margin:10px 0"></div>
+
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          ${canDo ? `<button class="btn btn--orange" data-act="feito" data-id="${esc(p.id)}">Marcar FEITO</button>` : ``}
+          ${canApprove ? `<button class="btn btn--green" data-act="aprovar" data-id="${esc(p.id)}">Aprovar</button>
+                          <button class="btn btn--red" data-act="reprovar" data-id="${esc(p.id)}">Reprovar</button>` : ``}
+          ${canReopenP ? `<button class="btn" data-act="reabrir" data-id="${esc(p.id)}">Reabrir</button>` : ``}
+        </div>
+
+        ${p.rejection?.note ? `<div class="small" style="margin-top:8px"><b>Reprovação:</b> ${esc(p.rejection.note)}</div>` : ``}
+      </div>
+    `;
+  }).join("");
+
+  $$("button[data-act]", container).forEach(btn=>{
+    btn.onclick = ()=>{
+      const act = btn.getAttribute("data-act");
+      const id = btn.getAttribute("data-id");
+      if(act==="feito") return actFeito(obraId, blockId, apto, id);
+      if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
+      if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
+      if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
+    };
   });
 }
 
-function escapeHTML(s){
-  return String(s ?? `").replace(/[&<>"']/g, (c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;` }[c]));
-}
-function escapeAttr(s){ return escapeHTML(s).replace(/`/g,"&quot;`); }
-
-function render(){
-  // Hard stop for stuck overlays on iPhone: close any modal on navigation
-  closeModal();
-
-  syncTopbar();
-  const cur = router.current();
-  delegatedReady = false; // re-attach delegation per view safely
-
-  if(cur.route === `login`) return renderLogin();
-  if(cur.route === `home`) return renderHome();
-  if(cur.route === `users`) return renderUsers();
-  if(cur.route === `dash`) return renderDashboard();
-  if(cur.route === `obra`) return renderObra(cur.params);
-  if(cur.route === `bloco`) return renderBloco(cur.params);
-  if(cur.route === `apto`) return renderApto(cur.params);
-  return renderLogin();
+function findPend(obraId, blockId, apto, pendId){
+  const apt = state.obras[obraId].blocks[blockId].apartments[apto];
+  const p = (apt.pendencias||[]).find(x=>x.id===pendId);
+  return { apt, p };
 }
 
-// Boot
+function actFeito(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  if(!canMarkDone(u)){ toast("Sem permissão."); return; }
+  const { p } = findPend(obraId, blockId, apto, pendId);
+  if(!p) return;
+  p.state = "feito";
+  p.doneAt = new Date().toISOString();
+  p.doneBy = { id:u.id, name:u.name, role:u.role };
+  saveState();
+  toast("Marcado como FEITO.");
+  render();
+}
 
-// iOS safety: always re-render after navigation
-const _routerGo = router.go.bind(router);
-router.go = (route, params={})=>{
-  _routerGo(route, params);
-  setTimeout(()=>safeRender(), 0);
-};
+function actAprovar(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  if(!canReview(u)){ toast("Sem permissão."); return; }
+  const { p } = findPend(obraId, blockId, apto, pendId);
+  if(!p) return;
+  p.state = "conferido";
+  p.reviewedAt = new Date().toISOString();
+  p.reviewedBy = { id:u.id, name:u.name, role:u.role };
+  p.rejection = null;
+  saveState();
+  toast("Conferido (aprovado).");
+  render();
+}
 
-(function boot(){
-  const start = ()=>{
-    router.stack = [];
-    const u = currentUser();
-    if(u){
-      if(u.role === `execucao`){
-        const obraId = (u.obraIds||[])[0];
-        router.go(`obra`, { obraId });
-      }else if(typeof canViewOnly === `function` && canViewOnly(u)){
-        router.go(`dash`);
-      }else{
-        router.go(`home`);
-      }
-    }else{
-      router.go(`login`);
-    }
-    setTimeout(()=>safeRender(), 0);
+function actReprovar(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  if(!canReview(u)){ toast("Sem permissão."); return; }
+  const note = prompt("Motivo da reprovação (curto):") || "";
+  const { p } = findPend(obraId, blockId, apto, pendId);
+  if(!p) return;
+  p.state = "reprovado";
+  p.reviewedAt = new Date().toISOString();
+  p.reviewedBy = { id:u.id, name:u.name, role:u.role };
+  p.rejection = { note, at: new Date().toISOString(), by: { id:u.id, name:u.name } };
+  saveState();
+  toast("Reprovado.");
+  render();
+}
+
+function actReabrir(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  if(!canReopen(u)){ toast("Sem permissão."); return; }
+  const { p } = findPend(obraId, blockId, apto, pendId);
+  if(!p) return;
+  p.state = "pendente";
+  p.reopenedAt = new Date().toISOString();
+  saveState();
+  toast("Reaberto.");
+  render();
+}
+
+function openAddPendencia(obraId, blockId, apto){
+  const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modalBackdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <div class="row">
+        <div>
+          <div class="h2">Adicionar pendência</div>
+          <div class="small">${esc(blockId.replace("B","Bloco "))} • Apto ${esc(apto)}</div>
+        </div>
+        <button class="btn btn--ghost" id="mClose">✕</button>
+      </div>
+      <div class="hr"></div>
+      <div class="grid">
+        <div>
+          <div class="small">Título</div>
+          <input id="mTitle" class="input" placeholder="Ex.: Ajustar porta / Rejunte / Vazamento..." />
+        </div>
+        <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
+          <div>
+            <div class="small">Categoria</div>
+            <input id="mCat" class="input" placeholder="Ex.: Hidráulica" />
+          </div>
+          <div>
+            <div class="small">Local</div>
+            <input id="mLoc" class="input" placeholder="Ex.: Banheiro / Cozinha" />
+          </div>
+        </div>
+        <div class="row" style="justify-content:flex-end">
+          <button id="mAdd" class="btn btn--orange">Adicionar</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = ()=> backdrop.remove();
+  $("#mClose", backdrop).onclick = close;
+  backdrop.addEventListener("click", (e)=>{ if(e.target===backdrop) close(); });
+
+  $("#mAdd", backdrop).onclick = ()=>{
+    const title = ($("#mTitle", backdrop).value||"").trim();
+    const category = ($("#mCat", backdrop).value||"").trim();
+    const location = ($("#mLoc", backdrop).value||"").trim();
+    if(!title){ toast("Informe o título."); return; }
+
+    const apt = state.obras[obraId].blocks[blockId].apartments[apto];
+    apt.pendencias.push({
+      id: uid("p"),
+      title, category, location,
+      state: "pendente",
+      createdAt: new Date().toISOString(),
+      createdBy: { id:u.id, name:u.name, role:u.role },
+      doneAt:null, doneBy:null,
+      reviewedAt:null, reviewedBy:null,
+      rejection:null,
+      reopenedAt:null
+    });
+    saveState();
+    close();
+    toast("Pendência adicionada.");
+    render();
   };
-  if(document.readyState === `loading`){
-    document.addEventListener(`DOMContentLoaded", start, { once:true });
+}
+
+// boot
+(function boot(){
+  // If session exists, route accordingly; else login.
+  const u = currentUser();
+  if(u){
+    if(u.role==="execucao"){
+      goto("obra", { obraId: (u.obraIds||[])[0] });
+    }else if(canViewOnly(u)){
+      goto("dash");
+    }else{
+      goto("home");
+    }
   }else{
-    start();
+    goto("login");
   }
 })();
