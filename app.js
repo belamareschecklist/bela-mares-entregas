@@ -2,7 +2,7 @@
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
 
-const STORAGE_KEY = "bm_checklist_v22";
+const STORAGE_KEY = "bm_checklist_v24";
 
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -33,16 +33,43 @@ function slugify(input){
   }
 }
 
+
+function fmtDT(iso){
+  if(!iso) return "-";
+  try{
+    const d = new Date(iso);
+    const pad = (n)=> String(n).padStart(2,"0");
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }catch(e){ return String(iso); }
+}
+function diffHM(aIso,bIso){
+  if(!aIso||!bIso) return "-";
+  try{
+    const a=new Date(aIso).getTime(), b=new Date(bIso).getTime();
+    const m=Math.max(0, Math.round((b-a)/60000));
+    const h=Math.floor(m/60), mm=m%60;
+    return `${h}h${String(mm).padStart(2,"0")}`;
+  }catch(e){ return "-"; }
+}
+function readImageAsDataURL(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(String(r.result||""));
+    r.onerror=()=>reject(r.error||new Error("Falha ao ler imagem"));
+    r.readAsDataURL(file);
+  });
+}
+
 function uid(prefix="id"){
   return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
 
 const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
-const APT_NUMS_16 = ["101","102","103","104","105","106","107","108","201","202","203","204","205","206","207","208"];
+const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
 function seed(){
   const state = {
-    version: 22,
+    version: 24,
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
@@ -65,7 +92,7 @@ function seed(){
       const apartments = {};
       const nums = (aptsPerBlock===12) ? APT_NUMS_12 : (aptsPerBlock===16 ? APT_NUMS_16 : APT_NUMS_12); // (se você quiser 16 depois, a gente coloca)
       nums.forEach(n=>{
-        apartments[n] = { num:n, pendencias: [] };
+        apartments[n] = { num:n, pendencias: [], photos: [] };
       });
       blocks[bid] = { id:bid, apartments };
     }
@@ -89,8 +116,9 @@ function seed(){
     doneAt:null, doneBy:null,
     reviewedAt:null, reviewedBy:null,
     rejection:null,
-    reopenedAt:null
-  });
+    reopenedAt:null,
+      photos: []
+    });
 
   return state;
 }
@@ -725,10 +753,16 @@ function renderApto(root){
 
         <div class="row">
           <div class="h2">Pendências</div>
+          ${canCreate(u) ? `<button id="btnAddAptFoto" class="btn">+ Foto do apto</button>` : ``}
           ${canCreate(u) ? `<button id="btnAddPend" class="btn btn--orange">+ Adicionar</button>` : ``}
         </div>
 
         <div class="hr"></div>
+        ${(apt.photos && apt.photos.length) ? `<div class="small"><b>Fotos do apartamento</b></div>
+        <div class="thumbs" id="aptThumbs">
+          ${apt.photos.map(ph=>`<img class="thumb" src="${esc(ph.dataUrl)}" alt="foto" />`).join("")}
+        </div>
+        <div class="hr"></div>` : ``}
 
         <div id="pendList" class="grid"></div>
       </div>
@@ -745,6 +779,33 @@ function renderApto(root){
       </div>
     </div>
   `;
+
+  const aptThumbs = $("#aptThumbs");
+  if(aptThumbs){ $$("img.thumb", aptThumbs).forEach(img=> img.onclick = ()=> openPhotoViewer(img.getAttribute("src"))); }
+
+  const btnAptFoto = $("#btnAddAptFoto");
+  if(btnAptFoto){
+    btnAptFoto.onclick = async ()=>{
+      const u = currentUser();
+      if(!canCreate(u)){ toast("Sem permissão."); return; }
+      const input = document.createElement("input");
+      input.type="file"; input.accept="image/*"; input.capture="environment";
+      input.onchange = async ()=>{
+        const file = input.files && input.files[0]; if(!file) return;
+        if(file.size > 1_500_000){ toast("Foto muito pesada. Tente uma menor."); return; }
+        try{
+          const dataUrl = await readImageAsDataURL(file);
+          apt.photos = apt.photos || [];
+          apt.photos.push({ id: uid("ph"), dataUrl, addedAt: new Date().toISOString(), addedBy: { id:u.id, name:u.name } });
+          saveState();
+          toast("Foto do apto adicionada.");
+          render();
+          openPhotoViewer(dataUrl);
+        }catch(e){ console.error(e); toast("Falha ao adicionar foto."); }
+      };
+      input.click();
+    };
+  }
 
   if($("#btnAddPend")){
     $("#btnAddPend").onclick = ()=> openAddPendencia(obraId, blockId, apto);
@@ -785,18 +846,36 @@ function renderPendencias(container, obraId, blockId, apto){
         </div>
 
         <div class="hr" style="margin:10px 0"></div>
+        <div class="small">
+          <b>Histórico</b><br>
+          Criado: <b>${fmtDT(p.createdAt)}</b> por <b>${esc(p.createdBy?.name||"-")}</b><br>
+          ${p.doneAt ? `Feito: <b>${fmtDT(p.doneAt)}</b> por <b>${esc(p.doneBy?.name||"-")}</b> (Δ ${diffHM(p.createdAt,p.doneAt)})<br>` : ``}
+          ${p.reviewedAt ? `Conferência: <b>${fmtDT(p.reviewedAt)}</b> por <b>${esc(p.reviewedBy?.name||"-")}</b> (Δ ${p.doneAt?diffHM(p.doneAt,p.reviewedAt):diffHM(p.createdAt,p.reviewedAt)})<br>` : ``}
+          ${p.reopenedAt ? `Reaberto: <b>${fmtDT(p.reopenedAt)}</b><br>` : ``}
+        </div>
+        ${(p.photos && p.photos.length) ? `<div class="hr" style="margin:10px 0"></div>
+          <div class="small"><b>Fotos</b></div>
+          <div class="thumbs">
+            ${p.photos.map(ph=>`<img class="thumb" data-ph="${esc(ph.id)}" data-pid="${esc(p.id)}" src="${esc(ph.dataUrl)}" alt="foto" />`).join("")}
+          </div>` : ``}
+
 
         <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
           ${canDo ? `<button class="btn btn--orange" data-act="feito" data-id="${esc(p.id)}">Marcar FEITO</button>` : ``}
           ${canApprove ? `<button class="btn btn--green" data-act="aprovar" data-id="${esc(p.id)}">Aprovar</button>
                           <button class="btn btn--red" data-act="reprovar" data-id="${esc(p.id)}">Reprovar</button>` : ``}
           ${canReopenP ? `<button class="btn" data-act="reabrir" data-id="${esc(p.id)}">Reabrir</button>` : ``}
+          ${canCreate(u) ? `<button class="btn" data-act="foto" data-id="${esc(p.id)}">Adicionar foto</button>` : ``}
         </div>
 
-        ${p.rejection?.note ? `<div class="small" style="margin-top:8px"><b>Reprovação:</b> ${esc(p.rejection.note)}</div>` : ``}
+        ${p.rejection?.note ? `<div class="small" style="margin-top:8px"><b>Reprovação:</b> ${esc(p.rejection.note)} <span class="small">(${fmtDT(p.rejection.at)} • ${esc(p.rejection.by?.name||"-")})</span></div>` : ``}
       </div>
     `;
   }).join("");
+
+  $$("img.thumb", container).forEach(img=>{
+    img.onclick = ()=>{ openPhotoViewer(img.getAttribute("src")); };
+  });
 
   $$("button[data-act]", container).forEach(btn=>{
     btn.onclick = ()=>{
@@ -806,6 +885,8 @@ function renderPendencias(container, obraId, blockId, apto){
       if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
       if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
       if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
+      if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
+
     };
   });
 }
@@ -870,6 +951,59 @@ function actReabrir(obraId, blockId, apto, pendId){
   render();
 }
 
+
+async function actAddFotoPend(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
+  // file picker
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.capture = "environment";
+  input.onchange = async ()=>{
+    const file = input.files && input.files[0];
+    if(!file) return;
+    // basic size guard (~1.5MB)
+    if(file.size > 1_500_000){
+      toast("Foto muito pesada. Tente uma menor.");
+      return;
+    }
+    try{
+      const dataUrl = await readImageAsDataURL(file);
+      const { p } = findPend(obraId, blockId, apto, pendId);
+      if(!p) return;
+      p.photos = p.photos || [];
+      p.photos.push({ id: uid("ph"), dataUrl, addedAt: new Date().toISOString(), addedBy: { id:u.id, name:u.name } });
+      saveState();
+      toast("Foto adicionada.");
+      render();
+      // open viewer for last photo
+      openPhotoViewer(dataUrl);
+    }catch(e){
+      console.error(e);
+      toast("Falha ao adicionar foto.");
+    }
+  };
+  input.click();
+}
+
+function openPhotoViewer(dataUrl){
+  const { backdrop, close } = openModal(`
+    <div class="modal">
+      <div class="row">
+        <div>
+          <div class="h2">Foto</div>
+          <div class="small">Toque fora para fechar</div>
+        </div>
+        <button class="btn btn--ghost" id="mClose">✕</button>
+      </div>
+      <div class="hr"></div>
+      <img src="${esc(dataUrl)}" alt="foto" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,.12)" />
+    </div>
+  `);
+  $("#mClose", backdrop).onclick = close;
+}
+
 function openAddPendencia(obraId, blockId, apto){
   const u = currentUser();
   if(!canCreate(u)){ toast("Sem permissão."); return; }
@@ -929,7 +1063,8 @@ function openAddPendencia(obraId, blockId, apto){
       doneAt:null, doneBy:null,
       reviewedAt:null, reviewedBy:null,
       rejection:null,
-      reopenedAt:null
+      reopenedAt:null,
+      photos: []
     });
     saveState();
     close();
@@ -960,7 +1095,7 @@ function addObra(id, name, numBlocks, aptsPerBlock){
     const bid="B"+b;
     const apartments={};
     const nums = (Number(aptsPerBlock)===16) ? APT_NUMS_16 : APT_NUMS_12;
-    nums.forEach(n=>apartments[n]={ num:n, pendencias:[] });
+    nums.forEach(n=>apartments[n]={ num:n, pendencias:[], photos:[] });
     blocks[bid]={ id:bid, apartments };
   }
   const obra={ id, name, config:{ numBlocks:Number(numBlocks), aptsPerBlock:Number(aptsPerBlock) }, blocks };
@@ -1114,6 +1249,8 @@ function renderUsers(root){
       if(!target) return;
       const ok = confirm("Desativar usuário "+id+"?");
       if(!ok) return;
+      const typed = prompt("Para confirmar, digite DESATIVAR:") || "";
+      if(typed.trim().toUpperCase()!=="DESATIVAR"){ toast("Cancelado."); return; }
       target.active = false;
       if(state.session?.userId===id){
         state.session = null;
