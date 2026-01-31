@@ -2,7 +2,83 @@
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
 
-const STORAGE_KEY = "bm_checklist_v26";
+const STORAGE_KEY = "bm_checklist_v27_localcache";
+
+// ===== Firebase (Realtime) =====
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
+  authDomain: "bela-mares-entregas.firebaseapp.com",
+  projectId: "bela-mares-entregas",
+  storageBucket: "bela-mares-entregas.firebasestorage.app",
+  messagingSenderId: "159475494264",
+  appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
+};
+
+let fbApp = null;
+let fbDb = null;
+let fbUnsub = null;
+const DOC_PATH = ["apps","bela_mares_checklist","state","main"]; // collection/doc/collection/doc
+
+function firebaseReady(){
+  return typeof firebase !== "undefined" && firebase && firebase.initializeApp;
+}
+
+async function initFirebase(){
+  if(!firebaseReady()) return false;
+  if(!fbApp){
+    fbApp = firebase.initializeApp(FIREBASE_CONFIG);
+    fbDb = firebase.firestore();
+  }
+  return true;
+}
+
+async function pullFromCloud(){
+  const ok = await initFirebase();
+  if(!ok) return { ok:false, msg:"Firebase não carregou." };
+  const ref = fbDb.collection(DOC_PATH[0]).doc(DOC_PATH[1]).collection(DOC_PATH[2]).doc(DOC_PATH[3]);
+  const snap = await ref.get();
+  if(!snap.exists) return { ok:false, msg:"Ainda não existe estado na nuvem." };
+  const data = snap.data();
+  if(!data || !data.state) return { ok:false, msg:"Estado inválido na nuvem." };
+  return { ok:true, state:data.state };
+}
+
+async function pushToCloud(newState){
+  const ok = await initFirebase();
+  if(!ok) return false;
+  const ref = fbDb.collection(DOC_PATH[0]).doc(DOC_PATH[1]).collection(DOC_PATH[2]).doc(DOC_PATH[3]);
+  await ref.set({ state:newState, updatedAt: new Date().toISOString() }, { merge:true });
+  return true;
+}
+
+async function ensureCloudSeed(){
+  const ok = await initFirebase();
+  if(!ok) return;
+  const ref = fbDb.collection(DOC_PATH[0]).doc(DOC_PATH[1]).collection(DOC_PATH[2]).doc(DOC_PATH[3]);
+  const snap = await ref.get();
+  if(!snap.exists){
+    await ref.set({ state: seed(), updatedAt: new Date().toISOString() });
+  }
+}
+
+function startRealtimeListener(){
+  if(!fbDb) return;
+  const ref = fbDb.collection(DOC_PATH[0]).doc(DOC_PATH[1]).collection(DOC_PATH[2]).doc(DOC_PATH[3]);
+  if(fbUnsub) fbUnsub();
+  fbUnsub = ref.onSnapshot((snap)=>{
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(!data || !data.state) return;
+    const sess = state.session;
+    state = data.state;
+    state.session = sess;
+    saveLocal();
+    render();
+  }, (err)=>{
+    console.error("Realtime error", err);
+  });
+}
+// ===============================
 
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -69,7 +145,7 @@ const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302"
 
 function seed(){
   const state = {
-    version: 26,
+    version: 27,
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
@@ -123,7 +199,7 @@ function seed(){
   return state;
 }
 
-function loadState(){
+function loadLocal(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
@@ -135,10 +211,15 @@ function loadState(){
     return seed();
   }
 }
-let state = loadState();
+let state = loadLocal();
 
-function saveState(){
+function saveLocal(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+async function saveState(){
+  saveLocal();
+  try{ await pushToCloud(state); }catch(e){}
 }
 
 function currentUser(){
@@ -1350,6 +1431,32 @@ function renderSettings(root){
 
 // boot
 (function boot(){
+  (async ()=>{
+    try{
+      await ensureCloudSeed();
+      const pulled = await pullFromCloud();
+      if(pulled.ok){
+        const sess = state.session;
+        state = pulled.state;
+        state.session = sess;
+        saveLocal();
+      }
+      startRealtimeListener();
+    }catch(e){
+      console.warn("Firebase bootstrap failed (offline/local)", e);
+    }
+
+    const u = currentUser();
+    if(u){
+      if(u.role==="execucao") { nav.screen="obra"; nav.params={ obraId:(u.obraIds||[])[0] }; }
+      else if(canViewOnly(u)) { nav.screen="dash"; nav.params={}; }
+      else { nav.screen="home"; nav.params={}; }
+    }else{
+      nav.screen="login"; nav.params={};
+    }
+    render();
+  })();
+
   // If session exists, route accordingly; else login.
   const u = currentUser();
   if(u){
