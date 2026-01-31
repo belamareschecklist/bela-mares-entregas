@@ -2,7 +2,7 @@
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
 
-const STORAGE_KEY = "bm_checklist_v20";
+const STORAGE_KEY = "bm_checklist_v22";
 
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -19,6 +19,20 @@ function toast(msg){
 }
 function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 
+
+function slugify(input){
+  try{
+    return String(input||"")
+      .trim()
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"") // remove acentos
+      .replace(/[^a-z0-9]+/g,"_")
+      .replace(/^_+|_+$/g,"");
+  }catch(e){
+    return String(input||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  }
+}
+
 function uid(prefix="id"){
   return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
@@ -28,7 +42,7 @@ const APT_NUMS_16 = ["101","102","103","104","105","106","107","108","201","202"
 
 function seed(){
   const state = {
-    version: 20,
+    version: 22,
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
@@ -120,6 +134,13 @@ function canReview(u){
 
 function canManageObras(u){
   return ["qualidade","supervisor"].includes(u.role);
+}
+
+function canManageUsers(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
+function canCreateSupervisor(u){
+  return u.role==="supervisor";
 }
 function canDeleteObra(u){
   return u.role==="supervisor";
@@ -219,6 +240,7 @@ function render(){
   if(nav.screen==="home") return renderHome(root);
   if(nav.screen==="obra") return renderObra(root);
   if(nav.screen==="apto") return renderApto(root);
+  if(nav.screen==="users") return renderUsers(root);
 
   // fallback
   nav.screen = "login";
@@ -321,6 +343,9 @@ function renderDash(root){
           <div class="h1">Visão Geral</div>
           <div class="small">Somatório de todas as obras</div>
         </div>
+        <div class="row" style="gap:8px">
+          ${canManageUsers(u) ? `<button id="btnUsersDash" class="btn">Usuários</button>` : ``}
+        </div>
       </div>
       <div class="hr"></div>
 
@@ -387,6 +412,7 @@ function renderHome(root){
           <div class="row" style="gap:8px">
             <button id="btnDash" class="btn">Visão Geral</button>
             ${canManageObras(u) ? `<button id="btnAddObra" class="btn btn--orange">+ Adicionar obra</button>` : ``}
+            <button id="btnUsers" class="btn">Usuários</button>
             <button id="btnReset2" class="btn btn--ghost">Zerar dados</button>
           </div>
         </div>
@@ -458,6 +484,25 @@ function renderHome(root){
               <div class="small">Nome da obra</div>
               <input id="mObraName" class="input" placeholder="Ex.: Paraty - Entregas" />
             </div>
+            <div>
+              <div class="small">Código (opcional)</div>
+              <input id="mObraId" class="input" placeholder="Ex.: paraty" />
+            </div>
+            <div>
+              <div class="small">Criar login da Execução (1 por obra)</div>
+              <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
+                <div>
+                  <div class="small">Usuário Execução</div>
+                  <input id="mExecUser" class="input" placeholder="Ex.: exec_paraty" />
+                </div>
+                <div>
+                  <div class="small">PIN Execução (4 dígitos)</div>
+                  <input id="mExecPin" class="input" inputmode="numeric" placeholder="Ex.: 1234" />
+                </div>
+              </div>
+            </div>
+            <div>
+            </div>
             <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
               <div>
                 <div class="small">Blocos</div>
@@ -487,6 +532,30 @@ function renderHome(root){
         const id = name.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
         const r = addObra(id, name, blocks, apts);
         if(!r.ok){ toast(r.msg); return; }
+
+        // criar (opcional) login de execução 1 por obra
+        const execUser = (($("#mExecUser", backdrop).value||"").trim());
+        const execPin  = (($("#mExecPin", backdrop).value||"").trim());
+
+        if(execUser || execPin){
+          if(!execUser){ toast("Informe o usuário da Execução."); return; }
+          if(!/^[0-9]{4}$/.test(execPin)){ toast("PIN da Execução deve ter 4 dígitos."); return; }
+
+          // garante 1 login de execução por obra
+          const already = state.users.find(u=>u.role==="execucao" && (u.obraIds||[])[0]===id && u.active);
+          if(already){
+            toast("Já existe Execução para essa obra.");
+            return;
+          }
+          const exists = state.users.find(u=>u.id===execUser);
+          if(exists){
+            toast("Usuário de Execução já existe.");
+            return;
+          }
+          state.users.push({ id: execUser, name: "Execução " + name, role:"execucao", pin: execPin, obraIds:[id], active:true });
+          saveState();
+        }
+
         close();
         toast("Obra adicionada!");
         goto("home");
@@ -507,6 +576,8 @@ function renderHome(root){
       goto("home");
     };
   });
+
+  $("#btnUsers").onclick = ()=> goto("users");
 
   $("#btnReset2").onclick = ()=>{
     state = seed();
@@ -879,7 +950,7 @@ function openModal(html){
 }
 
 function addObra(id, name, numBlocks, aptsPerBlock){
-  id = String(id||"").trim().toLowerCase().replace(/\s+/g,"_");
+  id = slugify(id);
   if(!id) return { ok:false, msg:"ID inválido" };
   if(state.obras[id]) return { ok:false, msg:"Já existe uma obra com esse ID" };
 
@@ -910,6 +981,165 @@ function deleteObra(obraId){
     return u;
   });
   saveState();
+}
+
+
+function renderUsers(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+  if(!canManageUsers(u)) { toast("Sem permissão."); return goto(canViewOnly(u) ? "dash" : "home"); }
+
+  const active = state.users.filter(x=>x.active);
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="h1">Usuários</div>
+            <div class="small">Gerencie logins (usuário + PIN)</div>
+          </div>
+          <div class="row" style="gap:8px">
+            <button id="btnBackUsers" class="btn">Voltar</button>
+            ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
+          </div>
+        </div>
+        <div class="hr"></div>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Usuário</th>
+              <th class="small">Perfil</th>
+              <th class="small">Acesso</th>
+              <th style="text-align:right">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${active.map(x=>{
+              const access = (x.obraIds||[])[0]==="*" ? "Todas" : (x.obraIds||[]).join(", ");
+              return `
+                <tr>
+                  <td><b>${esc(x.id)}</b><div class="small">${esc(x.name||"")}</div></td>
+                  <td class="small">${esc(x.role)}</td>
+                  <td class="small">${esc(access)}</td>
+                  <td style="text-align:right; white-space:nowrap">
+                    <button class="btn" data-pin="${esc(x.id)}">Alterar PIN</button>
+                    ${u.role==="supervisor" && x.role!=="diretor" ? `<button class="btn btn--red" data-off="${esc(x.id)}">Desativar</button>` : ``}
+                  </td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+
+        <div class="hr"></div>
+        <div class="small">
+          <b>Regras:</b> Qualidade e Supervisor podem gerenciar usuários. Somente Supervisor cria outro Supervisor e pode desativar usuários.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="h2">Criar login de Execução</div>
+        <div class="small">1 login por obra (para usar em mais de um celular, use o mesmo usuário + PIN).</div>
+        <div class="hr"></div>
+
+        <div class="grid">
+          <div>
+            <div class="small">Obra</div>
+            <select id="execObra" class="input">
+              ${state.obras_index.map(o=>`<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
+            <div>
+              <div class="small">Usuário</div>
+              <input id="execUser" class="input" placeholder="Ex.: exec_costa_rica" />
+            </div>
+            <div>
+              <div class="small">PIN (4 dígitos)</div>
+              <input id="execPin" class="input" inputmode="numeric" placeholder="Ex.: 1234" />
+            </div>
+          </div>
+          <div class="row" style="justify-content:flex-end">
+            <button id="btnCreateExec" class="btn btn--orange">Criar Execução</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("#btnBackUsers").onclick = ()=>{
+    const u2 = currentUser();
+    goto(canViewOnly(u2) ? "dash" : "home");
+  };
+
+  $("#btnCreateExec").onclick = ()=>{
+    const obraId = $("#execObra").value;
+    const userId = ($("#execUser").value||"").trim();
+    const pin = ($("#execPin").value||"").trim();
+    if(!userId){ toast("Informe o usuário."); return; }
+    if(!/^[0-9]{4}$/.test(pin)){ toast("PIN deve ter 4 dígitos."); return; }
+
+    const exists = state.users.find(x=>x.id===userId);
+    if(exists){ toast("Usuário já existe."); return; }
+
+    const already = state.users.find(x=>x.role==="execucao" && (x.obraIds||[])[0]===obraId && x.active);
+    if(already){ toast("Já existe Execução para essa obra."); return; }
+
+    const obraName = state.obras[obraId]?.name || obraId;
+    state.users.push({ id:userId, name:"Execução "+obraName, role:"execucao", pin, obraIds:[obraId], active:true });
+    saveState();
+    toast("Login Execução criado.");
+    goto("users");
+  };
+
+  $$('button[data-pin]').forEach(b=>{
+    b.onclick = ()=>{
+      const id = b.getAttribute("data-pin");
+      const newPin = prompt("Novo PIN (4 dígitos) para: "+id) || "";
+      if(!/^[0-9]{4}$/.test(newPin.trim())){ toast("PIN inválido."); return; }
+      const user = state.users.find(x=>x.id===id);
+      if(!user) return;
+      user.pin = newPin.trim();
+      saveState();
+      toast("PIN atualizado.");
+      goto("users");
+    };
+  });
+
+  $$('button[data-off]').forEach(b=>{
+    b.onclick = ()=>{
+      const id = b.getAttribute("data-off");
+      const target = state.users.find(x=>x.id===id);
+      if(!target) return;
+      const ok = confirm("Desativar usuário "+id+"?");
+      if(!ok) return;
+      target.active = false;
+      if(state.session?.userId===id){
+        state.session = null;
+      }
+      saveState();
+      toast("Usuário desativado.");
+      goto("users");
+    };
+  });
+
+  const addSup = $("#btnAddSup");
+  if(addSup){
+    addSup.onclick = ()=>{
+      const id = prompt("Usuário do novo Supervisor (ex.: supervisor_02)") || "";
+      const pin = prompt("PIN (4 dígitos) do novo Supervisor:") || "";
+      const uid = id.trim();
+      const p = pin.trim();
+      if(!uid){ toast("Usuário inválido."); return; }
+      if(!/^[0-9]{4}$/.test(p)){ toast("PIN inválido."); return; }
+      if(state.users.find(x=>x.id===uid)){ toast("Usuário já existe."); return; }
+      state.users.push({ id: uid, name:"Supervisor", role:"supervisor", pin:p, obraIds:["*"], active:true });
+      saveState();
+      toast("Supervisor criado.");
+      goto("users");
+    };
+  }
 }
 
 // boot
