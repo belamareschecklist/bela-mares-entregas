@@ -142,3 +142,5 @@ body{
 
 .thumbs{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px}
 .thumb{width:72px;height:72px;object-fit:cover;border-radius:12px;border:1px solid rgba(255,255,255,.12);cursor:pointer}
+
+.thumbWrap{position:relative; display:inline-block}

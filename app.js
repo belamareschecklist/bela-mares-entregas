@@ -2,7 +2,7 @@
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
 
-const STORAGE_KEY = "bm_checklist_v28_localcache";
+const STORAGE_KEY = "bm_checklist_v31_localcache";
 
 // ===== Firebase (Realtime) =====
 const FIREBASE_CONFIG = {
@@ -99,6 +99,29 @@ function blockNum(id){
   return m ? Number(m[1]) : 0;
 }
 function sortBlocks(a,b){
+
+function function getSortedBlockIds(obra){
+  if(!obra) return [];
+  let ids = [];
+  if(obra.blocks && typeof obra.blocks==="object" && !Array.isArray(obra.blocks)){
+    ids = Object.keys(obra.blocks).map(String);
+  }else if(Array.isArray(obra.blocks)){
+    ids = obra.blocks.map(String);
+  }else if(typeof obra.config?.numBlocks==="number"){
+    ids = Array.from({length:obra.config.numBlocks}, (_,i)=>String(i+1));
+  }
+  return ids.sort(sortBlocks);
+}
+function sortApts(a,b){ return aptNum(a)-aptNum(b); }
+  if(!obra) return [];
+  // supports object map { "1": {...}, ... } or array ["1","2"] or numbers
+  let ids = [];
+  if(Array.isArray(obra.blocks)) ids = obra.blocks.map(String);
+  else if(obra.blocks && typeof obra.blocks==="object") ids = Object.keys(obra.blocks);
+  else if(Array.isArray(obra.blockIds)) ids = obra.blockIds.map(String);
+  else if(obra.numBlocks) ids = Array.from({length:obra.numBlocks}, (_,i)=>String(i+1));
+  return ids.sort(sortBlocks);
+}
   return blockNum(a)-blockNum(b);
 }
 
@@ -126,6 +149,18 @@ function fmtDT(iso){
     const pad = (n)=> String(n).padStart(2,"0");
     return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }catch(e){ return String(iso); }
+
+function logEvent(p, type, u, extra={}){
+  p.events = p.events || [];
+  p.events.push({
+    id: uid("ev"),
+    type,
+    at: new Date().toISOString(),
+    by: u ? { id:u.id, name:u.name, role:u.role } : null,
+    extra
+  });
+}
+
 }
 function diffHM(aIso,bIso){
   if(!aIso||!bIso) return "-";
@@ -179,7 +214,7 @@ const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302"
 
 function seed(){
   const state = {
-    version: 28,
+    version: 31,
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
@@ -227,7 +262,8 @@ function seed(){
     reviewedAt:null, reviewedBy:null,
     rejection:null,
     reopenedAt:null,
-      photos: []
+      photos: [],
+      events: []
     });
 
   return state;
@@ -281,6 +317,23 @@ function canManageObras(u){
 
 function canManageUsers(u){
   return ["qualidade","supervisor"].includes(u.role);
+}
+
+
+function canModifyPend(u, p){
+  if(!u || !p) return false;
+  // Qualidade só mexe no que criou; Supervisor só no que criou
+  if(u.role==="qualidade" || u.role==="supervisor"){
+    return (p.createdBy && p.createdBy.id === u.id);
+  }
+  return false;
+}
+function canModifyPhoto(u, ph){
+  if(!u || !ph) return false;
+  if(u.role==="qualidade" || u.role==="supervisor"){
+    return (ph.addedBy && ph.addedBy.id === u.id);
+  }
+  return false;
 }
 
 function canResetData(u){
@@ -421,7 +474,7 @@ function renderLogin(root){
             <button id="btnLogin" class="btn btn--orange">Entrar</button>
             
           </div>
-          <div class="small">Dica: use os logins de teste (qualidade_01/2222, supervisor_01/3333, diretor/9999).</div>
+          
         </div>
       </div>
 
@@ -622,7 +675,15 @@ function renderHome(root){
               <div class="h2">Adicionar obra</div>
               <div class="small">Somente Qualidade e Supervisor</div>
             </div>
-            <button class="btn btn--ghost" id="mClose">✕</button>
+            <div class="row" style="gap:8px">
+          ${(() => {
+            const u = currentUser();
+            if(!meta) return "";
+            if(!(u && (u.role==="qualidade" || u.role==="supervisor"))) return "";
+            return `<button class="btn btn--red" id="mDel">Apagar</button>`;
+          })()}
+          <button class="btn btn--ghost" id="mClose">✕</button>
+        </div>
           </div>
           <div class="hr"></div>
           <div class="grid">
@@ -669,6 +730,20 @@ function renderHome(root){
         </div>
       `);
       $("#mClose", backdrop).onclick = close;
+  const delBtn = $("#mDel", backdrop);
+  if(delBtn){
+    delBtn.onclick = ()=>{
+      const ok = confirm("Apagar esta foto?");
+      if(!ok) return;
+      try{
+        deletePhotoByMeta(meta);
+        toast("Foto apagada.");
+        close();
+        render();
+      }catch(e){ console.error(e); toast("Não foi possível apagar."); }
+    };
+  }
+
       $("#mAddObra", backdrop).onclick = ()=>{
         const name = ($("#mObraName", backdrop).value||"").trim();
         const blocks = Number(($("#mBlocks", backdrop).value||"").trim());
@@ -744,7 +819,7 @@ function renderObra(root){
     return goto("login");
   }
 
-  const blocks = Object.keys(obra.blocks);
+  const blocks = getSortedBlockIds(obra);
 
   root.innerHTML = `
     <div class="card">
@@ -865,6 +940,7 @@ function renderApto(root){
 
         <div class="row">
           <div class="h2">Pendências</div>
+          ${((apt.audit||[]).length) ? `<span class="pill">Auditoria: ${(apt.audit||[]).length}</span>` : ``}
           ${canCreate(u) ? `<button id="btnAddAptFoto" class="btn">+ Foto do apto</button>` : ``}
           ${canCreate(u) ? `<button id="btnAddPend" class="btn btn--orange">+ Adicionar</button>` : ``}
         </div>
@@ -872,7 +948,7 @@ function renderApto(root){
         <div class="hr"></div>
         ${(apt.photos && apt.photos.length) ? `<div class="small"><b>Anexos do apartamento</b> <span class="small">(${(apt.photos||[]).length})</span></div>
         <div class="thumbs" id="aptThumbs">
-          ${(apt.photos||[]).length ? (apt.photos||[]).map(ph=>`<img class="thumb" src="${esc(ph.dataUrl)}" alt="foto" />`).join("") : `<div class="small" style="opacity:.8">Nenhuma foto adicionada.</div>`}
+          ${(apt.photos||[]).length ? (apt.photos||[]).map(ph=>`<div class="thumbWrap"><img class="thumb" data-scope="apt" data-ph="${esc(ph.id)}" src="${esc(ph.dataUrl)}" alt="foto" /></div>`).join("") : `<div class="small" style="opacity:.8">Nenhuma foto adicionada.</div>`}
         </div>
         <div class="hr"></div>` : ``}
 
@@ -960,15 +1036,18 @@ function renderPendencias(container, obraId, blockId, apto){
         <div class="hr" style="margin:10px 0"></div>
         <div class="small">
           <b>Histórico</b><br>
-          Criado: <b>${fmtDT(p.createdAt)}</b> por <b>${esc(p.createdBy?.name||"-")}</b><br>
-          ${p.doneAt ? `Feito: <b>${fmtDT(p.doneAt)}</b> por <b>${esc(p.doneBy?.name||"-")}</b> (Δ ${diffHM(p.createdAt,p.doneAt)})<br>` : ``}
-          ${p.reviewedAt ? `Conferência: <b>${fmtDT(p.reviewedAt)}</b> por <b>${esc(p.reviewedBy?.name||"-")}</b> (Δ ${p.doneAt?diffHM(p.doneAt,p.reviewedAt):diffHM(p.createdAt,p.reviewedAt)})<br>` : ``}
-          ${p.reopenedAt ? `Reaberto: <b>${fmtDT(p.reopenedAt)}</b><br>` : ``}
+          ${((p.events||[]).length ? (p.events||[]).map(ev=>{
+            const who = ev.by?.name || "-";
+            const when = fmtDT(ev.at);
+            const t = ev.type;
+            const extra = (t==="reprovada" && ev.extra?.motivo) ? ` — ${esc(ev.extra.motivo)}` : "";
+            return `• <b>${when}</b> — ${esc(who)}: ${esc(t)}${extra}`;
+          }).join("<br>") : "—")}
         </div>
         ${(p.photos && p.photos.length) ? `<div class="hr" style="margin:10px 0"></div>
           <div class="small"><b>Fotos</b></div>
           <div class="thumbs">
-            ${p.photos.map(ph=>`<img class="thumb" data-ph="${esc(ph.id)}" data-pid="${esc(p.id)}" src="${esc(ph.dataUrl)}" alt="foto" />`).join("")}
+            ${p.photos.map(ph=>`<div class="thumbWrap"><img class="thumb" data-scope="pend" data-ph="${esc(ph.id)}" data-pid="${esc(p.id)}" src="${esc(ph.dataUrl)}" alt="foto" /></div>`).join("")}
           </div>` : ``}
 
 
@@ -978,6 +1057,8 @@ function renderPendencias(container, obraId, blockId, apto){
                           <button class="btn btn--red" data-act="reprovar" data-id="${esc(p.id)}">Reprovar</button>` : ``}
           ${canReopenP ? `<button class="btn" data-act="reabrir" data-id="${esc(p.id)}">Reabrir</button>` : ``}
           ${canCreate(u) ? `<button class="btn" data-act="foto" data-id="${esc(p.id)}">Adicionar foto</button>` : ``}
+          ${canModifyPend(u,p) ? `<button class="btn" data-act="editar" data-id="${esc(p.id)}">Editar</button>` : ``}
+          ${canModifyPend(u,p) ? `<button class="btn btn--red" data-act="apagar" data-id="${esc(p.id)}">Apagar</button>` : ``}
         </div>
 
         ${p.rejection?.note ? `<div class="small" style="margin-top:8px"><b>Reprovação:</b> ${esc(p.rejection.note)} <span class="small">(${fmtDT(p.rejection.at)} • ${esc(p.rejection.by?.name||"-")})</span></div>` : ``}
@@ -986,7 +1067,7 @@ function renderPendencias(container, obraId, blockId, apto){
   }).join("");
 
   $$("img.thumb", container).forEach(img=>{
-    img.onclick = ()=>{ openPhotoViewer(img.getAttribute("src")); };
+    img.onclick = ()=>{ openPhotoViewer(img.getAttribute("src"), img.dataset); };
   });
 
   $$("button[data-act]", container).forEach(btn=>{
@@ -998,6 +1079,8 @@ function renderPendencias(container, obraId, blockId, apto){
       if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
       if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
       if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
+      if(act==="editar") return actEditPend(obraId, blockId, apto, id);
+      if(act==="apagar") return actDeletePend(obraId, blockId, apto, id);
 
     };
   });
@@ -1006,6 +1089,8 @@ function renderPendencias(container, obraId, blockId, apto){
 function findPend(obraId, blockId, apto, pendId){
   const apt = state.obras[obraId].blocks[blockId].apartments[apto];
   const p = (apt.pendencias||[]).find(x=>x.id===pendId);
+  if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
   return { apt, p };
 }
 
@@ -1014,6 +1099,7 @@ function actFeito(obraId, blockId, apto, pendId){
   if(!canMarkDone(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
   p.state = "feito";
   p.doneAt = new Date().toISOString();
   p.doneBy = { id:u.id, name:u.name, role:u.role };
@@ -1027,6 +1113,7 @@ function actAprovar(obraId, blockId, apto, pendId){
   if(!canReview(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
   p.state = "conferido";
   p.reviewedAt = new Date().toISOString();
   p.reviewedBy = { id:u.id, name:u.name, role:u.role };
@@ -1042,6 +1129,7 @@ function actReprovar(obraId, blockId, apto, pendId){
   const note = prompt("Motivo da reprovação (curto):") || "";
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
   p.state = "reprovado";
   p.reviewedAt = new Date().toISOString();
   p.reviewedBy = { id:u.id, name:u.name, role:u.role };
@@ -1056,6 +1144,7 @@ function actReabrir(obraId, blockId, apto, pendId){
   if(!canReopen(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
   p.state = "pendente";
   p.reopenedAt = new Date().toISOString();
   saveState();
@@ -1063,6 +1152,83 @@ function actReabrir(obraId, blockId, apto, pendId){
   render();
 }
 
+
+
+function deletePhotoByMeta(meta){
+  const u = currentUser();
+  if(!(u && (u.role==="qualidade" || u.role==="supervisor"))) throw new Error("no perm");
+  const scope = meta.scope || meta["data-scope"] || meta["scope"];
+  const phId = meta.ph || meta["data-ph"];
+  const pendId = meta.pid || meta["data-pid"];
+  if(!phId) throw new Error("no photo id");
+
+  // need current obra/block/apt from nav if on apt screen
+  const obraId = nav.params?.obraId;
+  const blockId = nav.params?.blockId;
+  const apto = nav.params?.apto;
+  const obra = state.obras[obraId];
+  if(!obra) throw new Error("no obra");
+  const block = obra.blocks[blockId];
+  if(!block) throw new Error("no block");
+  const apt = block.apartments[apto];
+  if(!apt) throw new Error("no apt");
+
+  if(scope==="apt"){
+    const ph = (apt.photos||[]).find(x=>x.id===phId);
+    if(!ph || !canModifyPhoto(u, ph)) throw new Error("no perm");
+    apt.photos = (apt.photos||[]).filter(p=>p.id!==phId);
+    saveState();
+    return;
+  }
+  if(scope==="pend"){
+    const p = (apt.pendencias||[]).find(x=>x.id===pendId);
+  if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
+    if(!p) throw new Error("no pend");
+    const ph = (p.photos||[]).find(x=>x.id===phId);
+    if(!ph || !canModifyPhoto(u, ph)) throw new Error("no perm");
+    p.photos = (p.photos||[]).filter(ph=>ph.id!==phId);
+    logEvent(p, "foto_apagada", u, { photoId: phId });
+    saveState();
+    return;
+  }
+  throw new Error("bad scope");
+}
+
+function actEditPend(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  const { p } = findPend(obraId, blockId, apto, pendId);
+  if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
+  const novo = prompt("Editar pendência:", p.texto || "") || "";
+  if(!novo.trim()){ toast("Cancelado."); return; }
+  const before = p.texto || "";
+  p.texto = novo.trim();
+  logEvent(p, "editada", u, { de: before, para: p.texto });
+  saveState();
+  toast("Pendência editada.");
+  render();
+}
+
+function actDeletePend(obraId, blockId, apto, pendId){
+  const u = currentUser();
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  const apt = block?.apartments?.[apto];
+  if(!apt) return;
+  const p = (apt.pendencias||[]).find(x=>x.id===pendId);
+  if(!p) return;
+  if(!canModifyPend(u,p)){ toast("Sem permissão."); return; }
+  const ok = confirm("Apagar esta pendência? (isso remove o item do apartamento)");
+  if(!ok) return;
+  // registrar evento no próprio item antes de apagar (para auditoria, mantemos no "audit" global do apto)
+  apt.audit = apt.audit || [];
+  apt.audit.push({ id: uid("aud"), at: new Date().toISOString(), by:{id:u.id,name:u.name,role:u.role}, type:"pendencia_apagada", pendenciaId: pendId, texto: p?.texto||"" });
+  apt.pendencias = (apt.pendencias||[]).filter(x=>x.id!==pendId);
+  saveState();
+  toast("Pendência apagada.");
+  render();
+}
 
 async function actAddFotoPend(obraId, blockId, apto, pendId){
   const u = currentUser();
@@ -1095,7 +1261,7 @@ async function actAddFotoPend(obraId, blockId, apto, pendId){
   input.click();
 }
 
-function openPhotoViewer(dataUrl){
+function openPhotoViewer(dataUrl, meta){
   const { backdrop, close } = openModal(`
     <div class="modal">
       <div class="row">
@@ -1103,13 +1269,35 @@ function openPhotoViewer(dataUrl){
           <div class="h2">Foto</div>
           <div class="small">Toque fora para fechar</div>
         </div>
-        <button class="btn btn--ghost" id="mClose">✕</button>
+        <div class="row" style="gap:8px">
+          ${(() => {
+            const u = currentUser();
+            if(!meta) return "";
+            if(!(u && (u.role==="qualidade" || u.role==="supervisor"))) return "";
+            return `<button class="btn btn--red" id="mDel">Apagar</button>`;
+          })()}
+          <button class="btn btn--ghost" id="mClose">✕</button>
+        </div>
       </div>
       <div class="hr"></div>
       <img src="${esc(dataUrl)}" alt="foto" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,.12)" />
     </div>
   `);
   $("#mClose", backdrop).onclick = close;
+  const delBtn = $("#mDel", backdrop);
+  if(delBtn){
+    delBtn.onclick = ()=>{
+      const ok = confirm("Apagar esta foto?");
+      if(!ok) return;
+      try{
+        deletePhotoByMeta(meta);
+        toast("Foto apagada.");
+        close();
+        render();
+      }catch(e){ console.error(e); toast("Não foi possível apagar."); }
+    };
+  }
+
 }
 
 function openAddPendencia(obraId, blockId, apto){
@@ -1125,7 +1313,15 @@ function openAddPendencia(obraId, blockId, apto){
           <div class="h2">Adicionar pendência</div>
           <div class="small">${esc(blockId.replace("B","Bloco "))} • Apto ${esc(apto)}</div>
         </div>
-        <button class="btn btn--ghost" id="mClose">✕</button>
+        <div class="row" style="gap:8px">
+          ${(() => {
+            const u = currentUser();
+            if(!meta) return "";
+            if(!(u && (u.role==="qualidade" || u.role==="supervisor"))) return "";
+            return `<button class="btn btn--red" id="mDel">Apagar</button>`;
+          })()}
+          <button class="btn btn--ghost" id="mClose">✕</button>
+        </div>
       </div>
       <div class="hr"></div>
       <div class="grid">
@@ -1153,6 +1349,20 @@ function openAddPendencia(obraId, blockId, apto){
 
   const close = ()=> backdrop.remove();
   $("#mClose", backdrop).onclick = close;
+  const delBtn = $("#mDel", backdrop);
+  if(delBtn){
+    delBtn.onclick = ()=>{
+      const ok = confirm("Apagar esta foto?");
+      if(!ok) return;
+      try{
+        deletePhotoByMeta(meta);
+        toast("Foto apagada.");
+        close();
+        render();
+      }catch(e){ console.error(e); toast("Não foi possível apagar."); }
+    };
+  }
+
   backdrop.addEventListener("click", (e)=>{ if(e.target===backdrop) close(); });
 
   $("#mAdd", backdrop).onclick = ()=>{
@@ -1172,9 +1382,13 @@ function openAddPendencia(obraId, blockId, apto){
       reviewedAt:null, reviewedBy:null,
       rejection:null,
       reopenedAt:null,
-      photos: []
+      photos: [],
+      events: []
     });
-    saveState();
+    
+    // evento criado
+    logEvent(apt.pendencias[apt.pendencias.length-1], "criada", u, { texto });
+saveState();
     close();
     toast("Pendência adicionada.");
     render();
