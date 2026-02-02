@@ -1,3 +1,4 @@
+const APP_VERSION = "classic-v27";
 
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
@@ -341,8 +342,7 @@ function renderLogin(root){
             <button id="btnLogin" class="btn btn--orange">Entrar</button>
             
           </div>
-          <div class="small">Dica: use os logins de teste (qualidade_01/2222, supervisor_01/3333, diretor/9999).</div>
-        </div>
+</div>
       </div>
 
       <div class="card">
