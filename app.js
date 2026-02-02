@@ -1510,6 +1510,12 @@ function renderSettings(root){
 })();
 
 
+}catch(err){
+      openPhotoViewer(t.getAttribute("src"));
+    }
+  }
+});
+
 
 
 // V33: Delegação de cliques para botões (Editar/Apagar/Foto/Feito/Aprovar/Reprovar/Reabrir)
