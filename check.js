@@ -1178,6 +1178,7 @@ function actDeletePhoto(obraId, blockId, apto, pendId, photoId){
 }
 
 
+}
 
 function openPhotoViewer(src, meta){
   const { backdrop, close } = openModal(`
@@ -1562,6 +1563,11 @@ function renderSettings(root){
 })();
 
 
+}catch(err){
+      openPhotoViewer(t.getAttribute("src"));
+    }
+  }
+});
 
 
 
