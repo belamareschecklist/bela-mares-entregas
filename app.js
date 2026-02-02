@@ -2,7 +2,7 @@
 /* Bela Mares — Checklist (v37) */
 /* Sem Service Worker para evitar cache travado em testes. */
 
-const STORAGE_KEY = "bm_checklist_v38_localcache";
+const STORAGE_KEY = "bm_checklist_v39_localcache";
 
 // ===== Firebase (Realtime) =====
 const FIREBASE_CONFIG = {
@@ -58,6 +58,10 @@ async function ensureCloudSeed(){
   const snap = await ref.get();
   if(!snap.exists){
     await ref.set({ state: seed(), updatedAt: new Date().toISOString() });
+  }
+  }catch(e){
+    console.error(e);
+    try{ root.innerHTML = `<div class="card"><div class="h2">Erro</div><div class="small">Falha ao renderizar. Recarregue.</div></div>`; }catch(_){}
   }
 }
 
@@ -199,6 +203,17 @@ async function compressImage(file, maxSize=1280, quality=0.78){
 }
 
 
+
+function navParam(k){
+  try{
+    return (nav && nav.params) ? nav.params[k] : undefined;
+  }catch(e){ return undefined; }
+}
+function getObraByNav(){
+  var obraId = navParam("obraId");
+  return state && state.obras ? state.obras[obraId] : null;
+}
+
 function uid(prefix="id"){
   return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
@@ -208,7 +223,7 @@ const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302"
 
 function seed(){
   const state = {
-    version: 38,
+    version: 39,
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
@@ -287,7 +302,7 @@ async function saveState(){
 }
 
 function currentUser(){
-  const sid = state.session?.userId;
+  const sid = state.session.userId;
   if(!sid) return null;
   return state.users.find(u=>u.id===sid && u.active) || null;
 }
@@ -369,7 +384,7 @@ function setTopbar(){
   back.style.display = showBack ? "inline-flex" : "none";
   back.onclick = ()=>{
     if(nav.screen==="apto"){
-      goto("obra", { obraId: nav.params.obraId, blockId: nav.params.blockId });
+      goto("obra", { obraId: navParam("obraId"), blockId: navParam("blockId") });
     }else if(nav.screen==="obra"){
       const u2 = currentUser();
       if(u2 && canViewOnly(u2)) goto("dash");
@@ -419,6 +434,7 @@ function aptStatus(apto){
 }
 
 function render(){
+  try{
   setTopbar();
   const root = $("#app");
   const u = currentUser();
@@ -535,7 +551,7 @@ function renderLogin(root){
     const already = state.users.find(x=>x.role==="execucao" && (x.obraIds||[])[0]===obraId && x.active);
     if(already){ toast("Já existe Execução para essa obra."); return; }
 
-    const obraName = state.obras[obraId]?.name || obraId;
+    const obraName = state.obras[obraId].name || obraId;
     state.users.push({ id:userId, name:"Execução "+obraName, role:"execucao", pin, obraIds:[obraId], active:true });
     saveState();
     toast("Login Execução criado.");
@@ -566,7 +582,7 @@ function renderLogin(root){
       const typed = prompt("Para confirmar, digite DESATIVAR:") || "";
       if(typed.trim().toUpperCase()!=="DESATIVAR"){ toast("Cancelado."); return; }
       target.active = false;
-      if(state.session?.userId===id){
+      if(state.session.userId===id){
         state.session = null;
       }
       saveState();
