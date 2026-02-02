@@ -1,4 +1,4 @@
-const APP_VERSION = "classic-v32";
+const APP_VERSION = "classic-v34";
 
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
@@ -965,6 +965,11 @@ function findPend(obraId, blockId, apto, pendId){
 }
 
 function actFeito(obraId, blockId, apto, pendId){
+  const __k=_lockKey(obraId,blockId,apto,pendId);
+  if(__feitoLock[__k]){ return; }
+  __feitoLock[__k]=true;
+  setTimeout(()=>{ __feitoLock[__k]=false; }, 800);
+
   const u = currentUser();
   if(!canMarkDone(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
@@ -1505,7 +1510,15 @@ function renderSettings(root){
 })();
 
 
-// V32: Delegação de cliques para botões (Editar/Apagar/Foto/Feito/Aprovar/Reprovar/Reabrir)
+}catch(err){
+      openPhotoViewer(t.getAttribute("src"));
+    }
+  }
+});
+
+
+
+// V33: Delegação de cliques para botões (Editar/Apagar/Foto/Feito/Aprovar/Reprovar/Reabrir)
 document.addEventListener("click", function(e){
   const t = e.target;
   if(!t) return;
@@ -1515,9 +1528,9 @@ document.addEventListener("click", function(e){
     e.preventDefault(); e.stopPropagation();
     const act = t.getAttribute("data-act");
     const id = t.getAttribute("data-id");
-    const obraId = state.route && state.route.params ? state.route.params.obraId : null;
-    const blockId = state.route && state.route.params ? state.route.params.blockId : null;
-    const apto = state.route && state.route.params ? state.route.params.apto : null;
+    const obraId = (typeof nav!=="undefined" && nav.params) ? nav.params.obraId : null;
+    const blockId = (typeof nav!=="undefined" && nav.params) ? nav.params.blockId : null;
+    const apto = (typeof nav!=="undefined" && nav.params) ? nav.params.apto : null;
     if(!obraId || !blockId || !apto || !id) return;
 
     if(act==="edit") return actEditPend(obraId, blockId, apto, id);
@@ -1529,22 +1542,25 @@ document.addEventListener("click", function(e){
     if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
   }
 
-  // Click na miniatura: abre foto. Se for do próprio usuário, mostra apagar dentro do modal.
+  // Click na miniatura: abre foto (apagar só dentro do modal)
   if(t.classList && t.classList.contains("thumb")){
     const pid = t.getAttribute("data-pid");
-    const ph = t.getAttribute("data-ph");
-    const obraId = state.route && state.route.params ? state.route.params.obraId : null;
-    const blockId = state.route && state.route.params ? state.route.params.blockId : null;
-    const apto = state.route && state.route.params ? state.route.params.apto : null;
+    const phid = t.getAttribute("data-ph");
+    const obraId = (typeof nav!=="undefined" && nav.params) ? nav.params.obraId : null;
+    const blockId = (typeof nav!=="undefined" && nav.params) ? nav.params.blockId : null;
+    const apto = (typeof nav!=="undefined" && nav.params) ? nav.params.apto : null;
+    if(!obraId || !blockId || !apto || !pid || !phid){
+      return openPhotoViewer(t.getAttribute("src"));
+    }
     const u = currentUser();
     try{
       const apt = state.obras[obraId].blocks[blockId].apartments[apto];
       const p = (apt.pendencias||[]).find(x=>x.id===pid);
-      const photo = (p && p.photos ? p.photos.find(x=>x.id===ph) : null);
+      const photo = (p && p.photos ? p.photos.find(x=>x.id===phid) : null);
       const mine = !!(photo && u && photo.addedBy && photo.addedBy.id===u.id);
       openPhotoViewer(photo ? photo.dataUrl : t.getAttribute("src"), {
         canDelete: mine && (u.role==="qualidade" || u.role==="supervisor"),
-        onDelete: ()=> actDeletePhoto(obraId, blockId, apto, pid, ph)
+        onDelete: ()=> actDeletePhoto(obraId, blockId, apto, pid, phid)
       });
     }catch(err){
       openPhotoViewer(t.getAttribute("src"));
@@ -1552,3 +1568,6 @@ document.addEventListener("click", function(e){
   }
 });
 
+
+let __feitoLock = {};
+function _lockKey(obraId, blockId, apto, pendId){ return [obraId,blockId,apto,pendId].join("|"); }
