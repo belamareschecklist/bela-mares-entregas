@@ -155,13 +155,12 @@ body{
   cursor:pointer;
 }
 
-/* V31: botão de apagar foto na própria miniatura */
-.thumbWrap{ position:relative; display:inline-block; }
-.thumbWrap .photoDel{
-  position:absolute; top:6px; right:6px;
-  width:30px; height:30px; border-radius:10px;
-  border:1px solid rgba(255,255,255,.14);
-  background: rgba(0,0,0,.45);
-  color:#fff; cursor:pointer;
+/* V32: botão apagar dentro do modal */
+.modalDel{
+  background: rgba(239,68,68,.18);
+  border:1px solid rgba(239,68,68,.35);
+  color:#fff;
+  padding:10px 12px;
+  border-radius:14px;
 }
-.thumbWrap .photoDel:active{ transform: translateY(1px); }
+.modalDel:active{ transform: translateY(1px); }

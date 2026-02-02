@@ -1,4 +1,4 @@
-const APP_VERSION = "classic-v31";
+const APP_VERSION = "classic-v32";
 
 /* Bela Mares — Checklist (v19) */
 /* Sem Service Worker para evitar cache travado em testes. */
@@ -913,13 +913,7 @@ function renderPendencias(container, obraId, blockId, apto){
         ${(p.photos && p.photos.length) ? `<div class="hr" style="margin:10px 0"></div>
           <div class="small"><b>Fotos</b></div>
           <div class="thumbs">
-            ${p.photos.map(ph=>{
-              const minePhoto = (ph.addedBy && u && ph.addedBy.id===u.id);
-              return `<span class="thumbWrap">
-                <img class="thumb" data-ph="${esc(ph.id)}" data-pid="${esc(p.id)}" src="${esc(ph.dataUrl)}" alt="foto" />
-                ${minePhoto ? `<button class="photoDel" title="Apagar foto" data-pend="${esc(p.id)}" data-phdel="${esc(ph.id)}">🗑</button>` : ``}
-              </span>`;
-            }).join("")}
+            ${p.photos.map(ph=>`<img class="thumb" data-ph="${esc(ph.id)}" data-pid="${esc(p.id)}" src="${esc(ph.dataUrl)}" alt="foto" />`).join("")}
           </div>` : ``}
 
 
@@ -1128,7 +1122,7 @@ function actDeletePhoto(obraId, blockId, apto, pendId, photoId){
 
 }
 
-function openPhotoViewer(dataUrl){
+function openPhotoViewer(src, meta){
   const { backdrop, close } = openModal(`
     <div class="modal">
       <div class="row">
@@ -1510,46 +1504,51 @@ function renderSettings(root){
   }
 })();
 
-// V31: delegação de clique (iPhone/PC) para garantir Editar/Apagar/FotoDel
+
+// V32: Delegação de cliques para botões (Editar/Apagar/Foto/Feito/Aprovar/Reprovar/Reabrir)
 document.addEventListener("click", function(e){
   const t = e.target;
   if(!t) return;
 
-  // apagar foto
-  if(t.classList && t.classList.contains("photoDel")){
-    e.preventDefault(); e.stopPropagation();
-    const pid = t.getAttribute("data-pend");
-    const phid = t.getAttribute("data-phdel");
-    // tenta pegar contexto atual
-    const obraId = state.route?.params?.obraId;
-    const blockId = state.route?.params?.blockId;
-    const apto = state.route?.params?.apto;
-    if(obraId && blockId && apto && pid && phid){
-      actDeletePhoto(obraId, blockId, apto, pid, phid);
-    }
-    return;
-  }
-
-  // ações de pendência (editar/apagar/feito/foto etc)
+  // Botões de ação da pendência
   if(t.matches && t.matches("button[data-act]")){
     e.preventDefault(); e.stopPropagation();
-    // ações já são tratadas nos binds por tela, mas aqui é fallback
+    const act = t.getAttribute("data-act");
+    const id = t.getAttribute("data-id");
+    const obraId = state.route && state.route.params ? state.route.params.obraId : null;
+    const blockId = state.route && state.route.params ? state.route.params.blockId : null;
+    const apto = state.route && state.route.params ? state.route.params.apto : null;
+    if(!obraId || !blockId || !apto || !id) return;
+
+    if(act==="edit") return actEditPend(obraId, blockId, apto, id);
+    if(act==="del") return actDeletePend(obraId, blockId, apto, id);
+    if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
+    if(act==="feito") return actFeito(obraId, blockId, apto, id);
+    if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
+    if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
+    if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
+  }
+
+  // Click na miniatura: abre foto. Se for do próprio usuário, mostra apagar dentro do modal.
+  if(t.classList && t.classList.contains("thumb")){
+    const pid = t.getAttribute("data-pid");
+    const ph = t.getAttribute("data-ph");
+    const obraId = state.route && state.route.params ? state.route.params.obraId : null;
+    const blockId = state.route && state.route.params ? state.route.params.blockId : null;
+    const apto = state.route && state.route.params ? state.route.params.apto : null;
+    const u = currentUser();
     try{
-      const act = t.getAttribute("data-act");
-      const id = t.getAttribute("data-id");
-      const obraId = state.route?.params?.obraId;
-      const blockId = state.route?.params?.blockId;
-      const apto = state.route?.params?.apto;
-      if(!obraId || !blockId || !apto || !id) return;
-      if(act==="edit") return actEditPend(obraId, blockId, apto, id);
-      if(act==="del") return actDeletePend(obraId, blockId, apto, id);
-      if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
-      if(act==="feito") return actFeito(obraId, blockId, apto, id);
-      if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
-      if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
-      if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
+      const apt = state.obras[obraId].blocks[blockId].apartments[apto];
+      const p = (apt.pendencias||[]).find(x=>x.id===pid);
+      const photo = (p && p.photos ? p.photos.find(x=>x.id===ph) : null);
+      const mine = !!(photo && u && photo.addedBy && photo.addedBy.id===u.id);
+      openPhotoViewer(photo ? photo.dataUrl : t.getAttribute("src"), {
+        canDelete: mine && (u.role==="qualidade" || u.role==="supervisor"),
+        onDelete: ()=> actDeletePhoto(obraId, blockId, apto, pid, ph)
+      });
     }catch(err){
-      console.error(err);
+      openPhotoViewer(t.getAttribute("src"));
     }
   }
 });
+
