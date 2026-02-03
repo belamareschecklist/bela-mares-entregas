@@ -18,6 +18,16 @@ function toast(msg){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
 }
+
+// --- Role normalization (more forgiving input) ---
+function normalizeRoleInput(raw){
+  return (raw || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
+    .replace(/[^a-z_]/g, ""); // keep letters/underscore only
+}
 function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 
 
@@ -424,7 +434,7 @@ function renderLogin(root){
   `;
 
   $("#btnLogin").onclick = ()=>{
-    const id = ($("#loginUser").value||"").trim();
+    const id = ($("#loginUser").value||"").trim().toLowerCase();
     const pin = ($("#loginPin").value||"").trim();
     const user = state.users.find(u=>u.id===id && u.active);
     if(!user){ toast("Usuário inválido"); return; }
@@ -652,7 +662,7 @@ function renderHome(root){
         if(!r.ok){ toast(r.msg); return; }
 
         // criar (opcional) login de execução 1 por obra
-        const execUser = (($("#mExecUser", backdrop).value||"").trim());
+        const execUser = (($("#mExecUser", backdrop).value||"").trim().toLowerCase());
         const execPin  = (($("#mExecPin", backdrop).value||"").trim());
 
         if(execUser || execPin){
@@ -1414,7 +1424,7 @@ function renderUsers(root){
 
   $("#btnCreateExec").onclick = ()=>{
     const obraId = $("#execObra").value;
-    const userId = ($("#execUser").value||"").trim();
+    const userId = ($("#execUser").value||"").trim().toLowerCase();
     const pin = ($("#execPin").value||"").trim();
     if(!userId){ toast("Informe o usuário."); return; }
     if(!/^[0-9]{4}$/.test(pin)){ toast("PIN deve ter 4 dígitos."); return; }
@@ -1473,7 +1483,7 @@ function renderUsers(root){
     addSup.onclick = ()=>{
       const id = prompt("Usuário do novo Supervisor (ex.: supervisor_02)") || "";
       const pin = prompt("PIN (4 dígitos) do novo Supervisor:") || "";
-      const uid = id.trim();
+      const uid = id.trim().toLowerCase();
       const p = pin.trim();
       if(!uid){ toast("Usuário inválido."); return; }
       if(!/^[0-9]{4}$/.test(p)){ toast("PIN inválido."); return; }
@@ -1488,10 +1498,13 @@ function renderUsers(root){
   const addUser = $("#btnAddUser");
   if(addUser){
     addUser.onclick = ()=>{
-      const role = (prompt("Perfil do usuário (qualidade, diretor, engenheiro, coordenador):") || "").trim().toLowerCase();
+      const role = normalizeRoleInput(prompt("Perfil do usuário (qualidade, diretor, engenheiro, coordenador):") || "");
       const allowed = ["qualidade","diretor","engenheiro","coordenador"];
-      if(!allowed.includes(role)){ toast("Perfil inválido."); return; }
-      const id = (prompt("Usuário (ex.: "+role+"_01):") || "").trim();
+      if(!allowed.includes(role)){
+        toast("Perfil inválido. Use: qualidade, diretor, engenheiro, coordenador.");
+        return;
+      }
+      const id = (prompt("Usuário (ex.: "+role+"_01):") || "").trim().toLowerCase();
       const pin = (prompt("PIN (4 dígitos):") || "").trim();
       if(!id){ toast("Usuário inválido."); return; }
       if(!/^[0-9]{4}$/.test(pin)){ toast("PIN inválido."); return; }
