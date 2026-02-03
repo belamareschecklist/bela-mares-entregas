@@ -4,112 +4,6 @@ const APP_VERSION = "classic-v34";
 /* Sem Service Worker para evitar cache travado em testes. */
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
-// --- Firestore REST (sync users across devices) ---
-// We store shared users inside a single Firestore document: apps/bela_mares_checklist (option 2).
-// This keeps your current app behavior, but makes created users available on any phone/PC.
-const FIREBASE_PROJECT_ID = "bela-mares-entregas";
-const FIREBASE_API_KEY = "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08";
-const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
-const SHARED_DOC_PATH = "apps/bela_mares_checklist";
-
-function _fsUrl(path, qs=""){
-  const q = qs ? ("&"+qs) : "";
-  return `${FIRESTORE_REST_BASE}/${path}?key=${encodeURIComponent(FIREBASE_API_KEY)}${q}`;
-}
-function _toFsFields(obj){
-  // Store as string to avoid Firestore type mapping complexity
-  return { stringValue: JSON.stringify(obj) };
-}
-function _fromFsStringField(fields, key){
-  try{
-    const v = fields?.[key]?.stringValue;
-    if(!v) return null;
-    return JSON.parse(v);
-  }catch(e){ return null; }
-}
-async function fetchSharedUsers(){
-  try{
-    const res = await fetch(_fsUrl(SHARED_DOC_PATH), { method:"GET" });
-    if(!res.ok) return null;
-    const data = await res.json();
-    const users = _fromFsStringField(data.fields, "usersJson");
-    const updatedAt = data.fields?.usersUpdatedAt?.timestampValue || null;
-    return { users, updatedAt };
-  }catch(e){
-    return null;
-  }
-}
-async function writeSharedUsers(users){
-  try{
-    const body = {
-      fields: {
-        usersJson: _toFsFields(users),
-        usersUpdatedAt: { timestampValue: new Date().toISOString() },
-        schemaVersion: { integerValue: String(CURRENT_SCHEMA_VERSION) }
-      }
-    };
-    const url = _fsUrl(SHARED_DOC_PATH, "updateMask.fieldPaths=usersJson&updateMask.fieldPaths=usersUpdatedAt&updateMask.fieldPaths=schemaVersion");
-    const res = await fetch(url, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
-    return res.ok;
-  }catch(e){
-    return false;
-  }
-}
-
-let _sharedUsersLastWrite = 0;
-let _sharedUsersWriteTimer = null;
-let _sharedUsersLastRemoteUpdatedAt = null;
-
-function scheduleSharedUsersWrite(){
-  clearTimeout(_sharedUsersWriteTimer);
-  _sharedUsersWriteTimer = setTimeout(async ()=>{
-    _sharedUsersLastWrite = Date.now();
-    const ok = await writeSharedUsers(state.users);
-    if(!ok){
-      // silent, avoids spamming
-    }
-  }, 600);
-}
-
-async function syncUsersFromRemoteOnce(){
-  const remote = await fetchSharedUsers();
-  if(!remote || !Array.isArray(remote.users)) return;
-  _sharedUsersLastRemoteUpdatedAt = remote.updatedAt || _sharedUsersLastRemoteUpdatedAt;
-  // Merge by id, remote wins (so new users created elsewhere appear here)
-  const localById = new Map((state.users||[]).map(u=>[u.id,u]));
-  for(const ru of remote.users){
-    if(!ru || !ru.id) continue;
-    localById.set(ru.id, ru);
-  }
-  state.users = Array.from(localById.values());
-  saveState();
-  render();
-}
-
-async function startUsersLiveSync(){
-  // initial pull
-  await syncUsersFromRemoteOnce();
-  // polling (simple + robust for GitHub Pages)
-  setInterval(async ()=>{
-    // If we just wrote, wait a bit so we don't overwrite ourselves
-    const remote = await fetchSharedUsers();
-    if(!remote || !Array.isArray(remote.users)) return;
-    const remoteAt = remote.updatedAt || null;
-    if(remoteAt && _sharedUsersLastRemoteUpdatedAt && remoteAt === _sharedUsersLastRemoteUpdatedAt) return;
-    // if local wrote very recently, skip one cycle
-    if(Date.now() - _sharedUsersLastWrite < 1500) return;
-    _sharedUsersLastRemoteUpdatedAt = remoteAt || _sharedUsersLastRemoteUpdatedAt;
-    const localById = new Map((state.users||[]).map(u=>[u.id,u]));
-    for(const ru of remote.users){
-      if(!ru || !ru.id) continue;
-      localById.set(ru.id, ru);
-    }
-    state.users = Array.from(localById.values());
-    saveState();
-    // Only rerender if logged in / relevant
-    render();
-  }, 6000);
-}
 
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -123,16 +17,6 @@ function toast(msg){
   el.style.display = "block";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
-}
-
-// --- Role normalization (more forgiving input) ---
-function normalizeRoleInput(raw){
-  return (raw || "")
-    .toString()
-    .trim()
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
-    .replace(/[^a-z_]/g, ""); // keep letters/underscore only
 }
 function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
 
@@ -280,16 +164,8 @@ function loadState(){
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
     const parsed = JSON.parse(raw);
-    if(!parsed || typeof parsed.version !== "number") return seed();
-    // Accept older saved versions; keep data and bump schema if needed.
-    if(parsed.version < 19) return seed();
-    if(parsed.version !== CURRENT_SCHEMA_VERSION){
-      parsed.version = CURRENT_SCHEMA_VERSION;
-    }
-    // Safety: ensure required roots exist
-    parsed.users = Array.isArray(parsed.users) ? parsed.users : seed().users;
-    parsed.obras = parsed.obras || {};
-    parsed.obras_index = Array.isArray(parsed.obras_index) ? parsed.obras_index : [];
+    if(!parsed || !parsed.version) return seed();
+    if(parsed.version !== 19) return seed();
     return parsed;
   }catch(e){
     return seed();
@@ -548,7 +424,7 @@ function renderLogin(root){
   `;
 
   $("#btnLogin").onclick = ()=>{
-    const id = ($("#loginUser").value||"").trim().toLowerCase();
+    const id = ($("#loginUser").value||"").trim();
     const pin = ($("#loginPin").value||"").trim();
     const user = state.users.find(u=>u.id===id && u.active);
     if(!user){ toast("Usuário inválido"); return; }
@@ -776,7 +652,7 @@ function renderHome(root){
         if(!r.ok){ toast(r.msg); return; }
 
         // criar (opcional) login de execução 1 por obra
-        const execUser = (($("#mExecUser", backdrop).value||"").trim().toLowerCase());
+        const execUser = (($("#mExecUser", backdrop).value||"").trim());
         const execPin  = (($("#mExecPin", backdrop).value||"").trim());
 
         if(execUser || execPin){
@@ -1463,7 +1339,6 @@ function renderUsers(root){
           <div class="row" style="gap:8px">
             <button id="btnBackUsers" class="btn">Voltar</button>
             ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
-            ${canCreateProfile(u) ? `<button id="btnAddProfile" class="btn">+ Perfil</button>` : ``}
             ${u.role==="supervisor" ? `<button id="btnAddUser" class="btn">+ Usuário</button>` : ``}
           </div>
         </div>
@@ -1487,7 +1362,7 @@ function renderUsers(root){
                   <td class="small">${esc(x.role)}</td>
                   <td class="small">${esc(access)}</td>
                   <td style="text-align:right; white-space:nowrap">
-                    ${canChangePin(u, x) ? `${canChangePin(u, x) ? `<button class="btn" data-pin="${esc(x.id)}">Alterar PIN</button>` : `<span class="small">—</span>`}` : ``}
+                    ${canChangePin(u, x) ? `<button class="btn" data-pin="${esc(x.id)}">Alterar PIN</button>` : ``}
                     ${u.role==="supervisor" && x.role!=="diretor" ? `<button class="btn btn--red" data-off="${esc(x.id)}">Desativar</button>` : ``}
                   </td>
                 </tr>
@@ -1538,10 +1413,8 @@ function renderUsers(root){
   };
 
   $("#btnCreateExec").onclick = ()=>{
-    const actor = currentUser();
-    if(!canCreateExec(actor)){ toast("Sem permissão."); return; }
     const obraId = $("#execObra").value;
-    const userId = ($("#execUser").value||"").trim().toLowerCase();
+    const userId = ($("#execUser").value||"").trim();
     const pin = ($("#execPin").value||"").trim();
     if(!userId){ toast("Informe o usuário."); return; }
     if(!/^[0-9]{4}$/.test(pin)){ toast("PIN deve ter 4 dígitos."); return; }
@@ -1553,9 +1426,8 @@ function renderUsers(root){
     if(already){ toast("Já existe Execução para essa obra."); return; }
 
     const obraName = state.obras[obraId]?.name || obraId;
-    state.users.push({ id:slugify(userId), name:"Execução "+obraName, role:"execucao", pin, obraIds:[obraId], active:true });
+    state.users.push({ id:userId, name:"Execução "+obraName, role:"execucao", pin, obraIds:[obraId], active:true });
     saveState();
-    scheduleSharedUsersWrite();
     toast("Login Execução criado.");
     goto("users");
   };
@@ -1570,11 +1442,8 @@ function renderUsers(root){
       if(!/^[0-9]{4}$/.test(newPin.trim())){ toast("PIN inválido."); return; }
       const user = state.users.find(x=>x.id===id);
       if(!user) return;
-      const actor = currentUser();
-      if(!canChangePin(actor, user)){ toast("Sem permissão."); return; }
       user.pin = newPin.trim();
       saveState();
-      scheduleSharedUsersWrite();
       toast("PIN atualizado.");
       goto("users");
     };
@@ -1594,7 +1463,6 @@ function renderUsers(root){
         state.session = null;
       }
       saveState();
-      scheduleSharedUsersWrite();
       toast("Usuário desativado.");
       goto("users");
     };
@@ -1605,14 +1473,13 @@ function renderUsers(root){
     addSup.onclick = ()=>{
       const id = prompt("Usuário do novo Supervisor (ex.: supervisor_02)") || "";
       const pin = prompt("PIN (4 dígitos) do novo Supervisor:") || "";
-      const uid = id.trim().toLowerCase();
+      const uid = id.trim();
       const p = pin.trim();
       if(!uid){ toast("Usuário inválido."); return; }
       if(!/^[0-9]{4}$/.test(p)){ toast("PIN inválido."); return; }
       if(state.users.find(x=>x.id===uid)){ toast("Usuário já existe."); return; }
-      state.users.push({ id: slugify(uid), name:"Supervisor", role:"supervisor", pin:p, obraIds:["*"], active:true });
+      state.users.push({ id: uid, name:"Supervisor", role:"supervisor", pin:p, obraIds:["*"], active:true });
       saveState();
-      scheduleSharedUsersWrite();
       toast("Supervisor criado.");
       goto("users");
     };
@@ -1621,13 +1488,10 @@ function renderUsers(root){
   const addUser = $("#btnAddUser");
   if(addUser){
     addUser.onclick = ()=>{
-      const role = normalizeRoleInput(prompt("Perfil do usuário (qualidade, diretor, engenheiro, coordenador):") || "");
+      const role = (prompt("Perfil do usuário (qualidade, diretor, engenheiro, coordenador):") || "").trim().toLowerCase();
       const allowed = ["qualidade","diretor","engenheiro","coordenador"];
-      if(!allowed.includes(role)){
-        toast("Perfil inválido. Use: qualidade, diretor, engenheiro, coordenador.");
-        return;
-      }
-      const id = (prompt("Usuário (ex.: "+role+"_01):") || "").trim().toLowerCase();
+      if(!allowed.includes(role)){ toast("Perfil inválido."); return; }
+      const id = (prompt("Usuário (ex.: "+role+"_01):") || "").trim();
       const pin = (prompt("PIN (4 dígitos):") || "").trim();
       if(!id){ toast("Usuário inválido."); return; }
       if(!/^[0-9]{4}$/.test(pin)){ toast("PIN inválido."); return; }
@@ -1787,31 +1651,3 @@ document.addEventListener("click", function(e){
 
 let __feitoLock = {};
 function _lockKey(obraId, blockId, apto, pendId){ return [obraId,blockId,apto,pendId].join("|"); }
-
-const addProfile = $("#btnAddProfile");
-if(addProfile){
-  addProfile.onclick = ()=>{
-    const actor = currentUser();
-    if(!actor || !canCreateProfile(actor)){ toast("Sem permissão."); return; }
-    const roleRaw = prompt("Perfil (qualidade, diretor, engenheiro, coordenador, execucao):") || "";
-    const role = normalizeRoleInput(roleRaw);
-    if(!role){ toast("Perfil inválido."); return; }
-    if(!canCreateRole(actor, role)){ toast("Sem permissão para esse perfil."); return; }
-    const id = prompt("Usuário (ex.: qualidade_elvis):") || "";
-    const pin = prompt("PIN (4 dígitos):") || "";
-    const uid2 = slugify(id);
-    const p = (pin||"").trim();
-    if(!uid2){ toast("Usuário inválido."); return; }
-    if(!/^[0-9]{4}$/.test(p)){ toast("PIN inválido."); return; }
-    if(state.users.find(x=>x.id===uid2)){ toast("Usuário já existe."); return; }
-    let name = role.charAt(0).toUpperCase()+role.slice(1);
-    state.users.push({ id: uid2, name, role, pin:p, obraIds:["*"], active:true });
-    saveState();
-    scheduleSharedUsersWrite();
-    toast("Perfil criado.");
-    goto("users");
-  };
-}
-
-
-startUsersLiveSync();
