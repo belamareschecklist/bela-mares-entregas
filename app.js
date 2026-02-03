@@ -61,6 +61,41 @@ function readImageAsDataURL(file){
   });
 }
 
+
+async function compressImageFileToDataURL(file, opts={}){
+  const maxDim = opts.maxDim ?? 1600;
+  const maxBytes = opts.maxBytes ?? 1200000; // ~1.2MB
+  let quality = opts.quality ?? 0.78;
+
+  const dataUrl = await readImageAsDataURL(file);
+
+  const img = await new Promise((res, rej)=>{
+    const i = new Image();
+    i.onload = ()=>res(i);
+    i.onerror = rej;
+    i.src = dataUrl;
+  });
+
+  let w = img.width, h = img.height;
+  const scale = Math.min(1, maxDim / Math.max(w,h));
+  w = Math.max(1, Math.round(w * scale));
+  h = Math.max(1, Math.round(h * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const approxBytes = (d)=> Math.ceil((d.length - (d.indexOf(",")+1)) * 3/4);
+
+  let out = canvas.toDataURL("image/jpeg", quality);
+  while(approxBytes(out) > maxBytes && quality > 0.35){
+    quality = Math.max(0.35, quality - 0.08);
+    out = canvas.toDataURL("image/jpeg", quality);
+  }
+  return out;
+}
+
 function uid(prefix="id"){
   return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
@@ -819,13 +854,13 @@ function renderApto(root){
   if(btnAptFoto){
     btnAptFoto.onclick = async ()=>{
       const u = currentUser();
+      if(!canCreate(u)){ toast("Sem permissão."); return; }
       const input = document.createElement("input");
       input.type="file"; input.accept="image/*"; input.capture="environment";
       input.onchange = async ()=>{
         const file = input.files && input.files[0]; if(!file) return;
-        if(file.size > 1_500_000){ toast("Foto muito pesada. Tente uma menor."); return; }
         try{
-          const dataUrl = await readImageAsDataURL(file);
+          const dataUrl = await compressImageFileToDataURL(file,{maxDim:1600,maxBytes:1200000,quality:0.78});
           apt.photos = apt.photos || [];
           apt.photos.push({ id: uid("ph"), dataUrl, addedAt: new Date().toISOString(), addedBy: { id:u.id, name:u.name } });
           saveState();
@@ -879,9 +914,10 @@ function renderPendencias(container, obraId, blockId, apto){
         <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
           ${(() => {
             const mine = (p.createdBy && u && p.createdBy.id===u.id);
+            const canEditMine = (canCreate(u) && mine);
             const btns = [];
-            // Apenas quem criou pode apagar (independente do perfil)
-            if(mine){
+            if(canEditMine){
+              btns.push(`<button class="btn btn--ghost" data-act="edit" data-id="${p.id}">Editar</button>`);
               btns.push(`<button class="btn btn--danger" data-act="del" data-id="${p.id}">Apagar</button>`);
             }
             return btns.join("");
@@ -1038,6 +1074,7 @@ function actReabrir(obraId, blockId, apto, pendId){
 
 async function actAddFotoPend(obraId, blockId, apto, pendId){
   const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
   // file picker
   const input = document.createElement("input");
   input.type = "file";
@@ -1045,14 +1082,8 @@ async function actAddFotoPend(obraId, blockId, apto, pendId){
   input.capture = "environment";
   input.onchange = async ()=>{
     const file = input.files && input.files[0];
-    if(!file) return;
-    // basic size guard (~1.5MB)
-    if(file.size > 1_500_000){
-      toast("Foto muito pesada. Tente uma menor.");
-      return;
-    }
-    try{
-      const dataUrl = await readImageAsDataURL(file);
+    if(!file) return;    try{
+      const dataUrl = await compressImageFileToDataURL(file,{maxDim:1600,maxBytes:1200000,quality:0.78});
       const { p } = findPend(obraId, blockId, apto, pendId);
       if(!p) return;
       p.photos = p.photos || [];
@@ -1069,10 +1100,9 @@ async function actAddFotoPend(obraId, blockId, apto, pendId){
     }
   };
   input.click();
-}
-
 function actEditPend(obraId, blockId, apto, pendId){
   const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p) return;
   if(!(p.createdBy && u && p.createdBy.id===u.id)){ toast("Você só pode editar o que você criou."); return; }
@@ -1091,6 +1121,7 @@ function actEditPend(obraId, blockId, apto, pendId){
 
 function actDeletePend(obraId, blockId, apto, pendId){
   const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
   const apt = state.obras[obraId].blocks[blockId].apartments[apto];
   const idx = (apt.pendencias||[]).findIndex(x=>x.id===pendId);
   if(idx<0) return;
@@ -1107,6 +1138,7 @@ function actDeletePend(obraId, blockId, apto, pendId){
 
 function actDeletePhoto(obraId, blockId, apto, pendId, photoId){
   const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
   const { p } = findPend(obraId, blockId, apto, pendId);
   if(!p || !p.photos) return;
   const ph = p.photos.find(x=>x.id===photoId);
@@ -1120,9 +1152,10 @@ function actDeletePhoto(obraId, blockId, apto, pendId, photoId){
   render();
 }
 
+
+}
+
 function openPhotoViewer(src, meta){
-  meta = meta || {};
-  const canDelete = !!meta.canDelete;
   const { backdrop, close } = openModal(`
     <div class="modal">
       <div class="row">
@@ -1130,27 +1163,18 @@ function openPhotoViewer(src, meta){
           <div class="h2">Foto</div>
           <div class="small">Toque fora para fechar</div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center">
-          ${canDelete ? `<button class="btn btn--danger" id="mDel">Apagar</button>` : ``}
-          <button class="btn btn--ghost" id="mClose">✕</button>
-        </div>
+        <button class="btn btn--ghost" id="mClose">✕</button>
       </div>
       <div class="hr"></div>
-      <img src="${esc(src)}" alt="foto" style="width:100%; max-height:80vh; object-fit:contain; border-radius:14px; border:1px solid rgba(255,255,255,.12)" />
+      <img src="${esc(src)}" alt="foto" style="width:100%; border-radius:14px; border:1px solid rgba(255,255,255,.12)" />
     </div>
   `);
   $("#mClose", backdrop).onclick = close;
-  const delBtn = $("#mDel", backdrop);
-  if(delBtn){
-    delBtn.onclick = () => {
-      try{ if(typeof meta.onDelete === "function"){ meta.onDelete(); } }
-      finally{ close(); }
-    };
-  }
 }
 
 function openAddPendencia(obraId, blockId, apto){
   const u = currentUser();
+  if(!canCreate(u)){ toast("Sem permissão."); return; }
 
   const backdrop = document.createElement("div");
   backdrop.className = "modalBackdrop";
@@ -1556,8 +1580,7 @@ document.addEventListener("click", function(e){
       const photo = (p && p.photos ? p.photos.find(x=>x.id===phid) : null);
       const mine = !!(photo && u && photo.addedBy && photo.addedBy.id===u.id);
       openPhotoViewer(photo ? photo.dataUrl : t.getAttribute("src"), {
-                canDelete: mine,
-
+        canDelete: mine && (u.role==="qualidade" || u.role==="supervisor"),
         onDelete: ()=> actDeletePhoto(obraId, blockId, apto, pid, phid)
       });
     }catch(err){
