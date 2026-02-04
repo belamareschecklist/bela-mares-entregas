@@ -75,8 +75,8 @@ function seed(){
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
       { id:"qualidade_01", name:"Qualidade 01", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
-      { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
-      { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
+      { id:"costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
+      { id:"costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
       { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
       { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
       { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true },
@@ -130,7 +130,7 @@ function loadState(){
     if(!raw) return seed();
     const parsed = JSON.parse(raw);
     if(!parsed || !parsed.version) return seed();
-    if(parsed.version !== 19) return seed();
+    if(parsed.version !== 26) return seed();
     return parsed;
   }catch(e){
     return seed();
@@ -138,100 +138,8 @@ function loadState(){
 }
 let state = loadState();
 
-// ================= Firebase (Firestore) sync (no build; compat SDK loaded in index.html) =================
-let fb = { enabled:false, db:null, ref:null, applyingRemote:false, pushTimer:null, lastPushed:"" };
-
-function initFirebaseSync(){
-  try{
-    if(!window.firebase || !window.firebase.initializeApp) return; // scripts not loaded
-    // Avoid double-init if page hot-reloads
-    if(!firebase.apps || !firebase.apps.length){
-      firebase.initializeApp({
-        apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
-        authDomain: "bela-mares-entregas.firebaseapp.com",
-        projectId: "bela-mares-entregas",
-        storageBucket: "bela-mares-entregas.firebasestorage.app",
-        messagingSenderId: "159475494264",
-        appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
-      });
-    }
-    fb.db = firebase.firestore();
-    // Firestore path: apps / bela_mares_checklist / state / main
-    fb.ref = fb.db.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
-    fb.enabled = true;
-
-    // Live updates (ignore our own pending writes)
-    fb.ref.onSnapshot((snap)=>{
-      if(!snap.exists) return;
-      if(snap.metadata && snap.metadata.hasPendingWrites) return;
-      const data = snap.data() || {};
-      if(!data.state) return;
-      try{
-        const remote = data.state;
-        const remoteJson = JSON.stringify(remote);
-        const localJson  = JSON.stringify(state);
-        if(remoteJson === localJson) return;
-
-        fb.applyingRemote = true;
-        state = remote;
-        // keep a local cache too
-        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(_){}
-        fb.applyingRemote = false;
-        render();
-      }catch(err){
-        console.warn("Erro ao aplicar estado remoto:", err);
-        fb.applyingRemote = false;
-      }
-    }, (err)=>{
-      console.warn("Firestore snapshot error:", err);
-    });
-
-    // Ensure initial doc exists (do not overwrite if already exists)
-    fb.ref.get().then((snap)=>{
-      if(!snap.exists){
-        pushStateToFirebase(); // create
-      }
-    }).catch(()=>{});
-  }catch(err){
-    console.warn("Firebase init falhou:", err);
-    fb.enabled = false;
-  }
-}
-
-function schedulePushState(){
-  if(!fb.enabled) return;
-  if(fb.applyingRemote) return;
-  clearTimeout(fb.pushTimer);
-  fb.pushTimer = setTimeout(()=>pushStateToFirebase(), 600);
-}
-
-function pushStateToFirebase(){
-  if(!fb.enabled) return;
-  if(fb.applyingRemote) return;
-  try{
-    const json = JSON.stringify(state);
-    if(json === fb.lastPushed) return;
-    fb.lastPushed = json;
-    fb.ref.set({
-      state,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    }, { merge:true }).catch((err)=>{
-      console.warn("Falha ao enviar para Firestore:", err);
-    });
-  }catch(err){
-    console.warn("pushStateToFirebase erro:", err);
-  }
-}
-// =======================================================================================================
-
-initFirebaseSync();
-
 function saveState(){
-  try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }catch(_){}
-  // keep everyone in sync (pc/celular) via Firestore
-  schedulePushState();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 
@@ -974,7 +882,9 @@ function renderPendencias(container, obraId, blockId, apto){
             const mine = (p.createdBy && u && p.createdBy.id===u.id);
             const canEditMine = (canCreate(u) && mine);
             const btns = [];
-            if(canEditMine){btns.push(`<button class="btn btn--danger" data-act="del" data-id="${p.id}">Apagar</button>`);
+            if(canEditMine){
+              btns.push(`<button class="btn btn--ghost" data-act="edit" data-id="${p.id}">Editar</button>`);
+              btns.push(`<button class="btn btn--danger" data-act="del" data-id="${p.id}">Apagar</button>`);
             }
             return btns.join("");
           })()}
@@ -1032,7 +942,8 @@ function renderPendencias(container, obraId, blockId, apto){
       if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
       if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
       if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
-      if(act==="foto") { toast("Fotos desativadas nesta versão."); return; }
+      if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
+      if(act==="edit") return actEditPend(obraId, blockId, apto, id);
       if(act==="del") return actDeletePend(obraId, blockId, apto, id);
     };
   });
@@ -1418,7 +1329,7 @@ function renderUsers(root){
           <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
             <div>
               <div class="small">Usuário</div>
-              <input id="execUser" class="input" placeholder="Ex.: exec_costa_rica" />
+              <input id="execUser" class="input" placeholder="Ex.: costa_rica" />
             </div>
             <div>
               <div class="small">PIN (4 dígitos)</div>
