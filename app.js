@@ -6,6 +6,16 @@ const STATE_VERSION = 26;
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
 
+const SESSION_KEY = "bm_checklist_session_user";
+function getSessionUserId(){
+  try{ return (localStorage.getItem(SESSION_KEY)||"").trim().toLowerCase(); }catch(e){ return ""; }
+}
+function setSessionUserId(id){
+  try{ if(!id){ localStorage.removeItem(SESSION_KEY); return; }
+    localStorage.setItem(SESSION_KEY, String(id).trim().toLowerCase());
+  }catch(e){}
+}
+
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
@@ -133,6 +143,7 @@ function loadState(){
     const parsed = JSON.parse(raw);
     if(!parsed || !parsed.version) return seed();
     if(parsed.version !== STATE_VERSION) return seed();
+    if(parsed && parsed.session) delete parsed.session;
     if(!parsed._meta) parsed._meta = {};
     return parsed;
   }catch(e){
@@ -189,10 +200,11 @@ function initFirestore(){
         if(ts <= localTs) return;
 
         isApplyingRemote = true;
+        if(parsed && parsed.session) delete parsed.session;
         state = parsed;
         if(!state._meta) state._meta = {};
         state._meta.updatedAt = ts;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(pstate || persistableState()));
         // re-render current screen
         try{ render(); }catch(_){}
       }catch(e){}
@@ -207,7 +219,7 @@ function initFirestore(){
 
 initFirestore();
 
-function queueSaveToFirestore(){
+function queueSaveToFirestore(pstate){
   if(!fbReady) return;
   if(saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
@@ -219,23 +231,31 @@ function queueSaveToFirestore(){
       const payload = {
         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
         updatedAtMs: now,
-        state: JSON.stringify(state)
+        state: JSON.stringify(pstate || persistableState())
       };
       await ref.set(payload, {merge:true});
       // keep local meta in sync (ms is fine for comparison)
       if(!state._meta) state._meta = {};
       state._meta.updatedAt = now;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(pstate || persistableState()));
     }catch(e){
       // ignore
     }
   }, 400);
 }
 
+function persistableState(){
+  // Never persist session globally; session is per-device (SESSION_KEY)
+  const copy = JSON.parse(JSON.stringify(state));
+  if(copy && copy.session) delete copy.session;
+  return copy;
+}
+
 function saveState(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const pstate = persistableState();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(pstate));
   // live sync (if enabled)
-  try{ queueSaveToFirestore(); }catch(_){}
+  try{ queueSaveToFirestore(pstate); }catch(_){ }
 }
 
 function safeName(obj){
@@ -273,9 +293,9 @@ function fmtEvent(ev){
 }
 
 function currentUser(){
-  const sid = state.session?.userId;
+  const sid = getSessionUserId();
   if(!sid) return null;
-  return state.users.find(u=>u.id===sid && u.active) || null;
+  return state.users.find(u=>String(u.id).toLowerCase()===sid && u.active) || null;
 }
 
 function canViewOnly(u){
@@ -357,8 +377,7 @@ function setTopbar(){
   settingsBtn.onclick = ()=>{ goto("settings"); };
 
   logout.onclick = ()=>{
-    state.session = null;
-    saveState();
+    setSessionUserId("");
     goto("login");
   };
 }
@@ -472,8 +491,7 @@ function renderLogin(root){
     const user = state.users.find(u=>u.id===id && u.active);
     if(!user){ toast("Usuário inválido"); return; }
     if(user.pin !== pin){ toast("PIN incorreto"); return; }
-    state.session = { userId: user.id };
-    saveState();
+    setSessionUserId(user.id);
     // route
     if(user.role==="execucao"){
       const obraId = (user.obraIds||[])[0];
@@ -1540,8 +1558,8 @@ function renderUsers(root){
       const typed = prompt("Para confirmar, digite DESATIVAR:") || "";
       if(typed.trim().toUpperCase()!=="DESATIVAR"){ toast("Cancelado."); return; }
       target.active = false;
-      if(state.session?.userId===id){
-        state.session = null;
+      if(getSessionUserId()===String(id).toLowerCase()){
+        setSessionUserId("");
       }
       saveState();
       toast("Usuário desativado.");
