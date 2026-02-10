@@ -5,6 +5,130 @@ const APP_VERSION = "classic-v34";
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
 
+
+const SESSION_KEY = STORAGE_KEY + "_session_v1";
+
+// ---- Sessão é LOCAL por aparelho (não sincroniza). Isso evita "login único" em vários dispositivos.
+function loadSession(){
+  try{ return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); }catch(e){ return null; }
+}
+function saveSession(sess){
+  try{
+    if(sess) localStorage.setItem(SESSION_KEY, JSON.stringify(sess));
+    else localStorage.removeItem(SESSION_KEY);
+  }catch(e){}
+}
+
+// ---- Firebase (Firestore) sync (opcional). Mantém dados ao vivo entre PC e celular.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
+  authDomain: "bela-mares-entregas.firebaseapp.com",
+  projectId: "bela-mares-entregas",
+  storageBucket: "bela-mares-entregas.firebasestorage.app",
+  messagingSenderId: "159475494264",
+  appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
+};
+
+let _fbReady = false;
+let _db = null;
+let _appDoc = null;
+let _unsubRealtime = null;
+let _remoteWriteTimer = null;
+let _applyingRemote = false;
+
+function firebaseInit(){
+  try{
+    if(typeof firebase === "undefined") return false;
+    if(!firebase.apps || !firebase.apps.length){
+      firebase.initializeApp(FIREBASE_CONFIG);
+    }
+    _db = firebase.firestore();
+    _appDoc = _db.collection("apps").doc("bela_mares_checklist");
+    _fbReady = true;
+    return true;
+  }catch(e){
+    console.warn("Firebase init falhou:", e);
+    return false;
+  }
+}
+
+function stripLocalOnly(s){
+  // clone simples e remove sessão
+  const clone = JSON.parse(JSON.stringify(s || {}));
+  delete clone.session;
+  return clone;
+}
+
+async function syncPullOnce(){
+  if(!_fbReady || !_appDoc) return;
+  try{
+    const snap = await _appDoc.get();
+    if(!snap.exists) return;
+
+    const data = snap.data() || {};
+    const remote = (data && data.state) ? data.state : data;
+    if(!remote || typeof remote !== "object") return;
+
+    // preserva sessão local
+    const localSess = state && state.session ? state.session : loadSession();
+    _applyingRemote = true;
+    state = remote;
+    state.session = localSess || null;
+
+    // salva local (sem empurrar pro remoto agora)
+    saveState(true);
+
+    // re-render se já existir router/render
+    try{ if(typeof render === "function") render(); }catch(e){}
+    _applyingRemote = false;
+  }catch(e){
+    console.warn("syncPullOnce falhou:", e);
+  }
+}
+
+function syncStartRealtime(){
+  if(!_fbReady || !_appDoc) return;
+  try{
+    if(_unsubRealtime) _unsubRealtime();
+    _unsubRealtime = _appDoc.onSnapshot((snap)=>{
+      try{
+        if(!snap.exists) return;
+        const data = snap.data() || {};
+        const remote = (data && data.state) ? data.state : data;
+        if(!remote || typeof remote !== "object") return;
+
+        // Não sobrescreve a sessão local
+        const localSess = state && state.session ? state.session : loadSession();
+
+        // evita loop: se o update veio da nossa própria escrita muito recente, ainda assim aceitamos,
+        // mas preservando sessão.
+        _applyingRemote = true;
+        state = remote;
+        state.session = localSess || null;
+        saveState(true);
+        try{ if(typeof render === "function") render(); }catch(e){}
+        _applyingRemote = false;
+      }catch(e){ console.warn("snapshot err:", e); }
+    });
+  }catch(e){
+    console.warn("syncStartRealtime falhou:", e);
+  }
+}
+
+function syncQueuePush(){
+  if(!_fbReady || !_appDoc) return;
+  if(_applyingRemote) return; // não faz push durante apply remoto
+  if(_remoteWriteTimer) clearTimeout(_remoteWriteTimer);
+  _remoteWriteTimer = setTimeout(async ()=>{
+    try{
+      const payload = { state: stripLocalOnly(state) };
+      await _appDoc.set(payload, { merge: true });
+    }catch(e){
+      console.warn("sync push falhou:", e);
+    }
+  }, 500);
+}
+
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
@@ -138,151 +262,26 @@ function loadState(){
 }
 let state = loadState();
 
-function saveState(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+// Firebase sync (se libs estiverem carregadas no index.html)
+if(firebaseInit()){
+  // primeiro puxa do remoto (para não perder dados existentes)
+  syncPullOnce().then(()=>{ syncStartRealtime(); });
 }
 
-// ------------------------------
-// Firebase (compat) - Live Sync (Firestore)
-// Lê/escreve no MESMO lugar que já existe no seu Firestore:
-// apps / bela_mares_checklist  (campo "state")
-// ------------------------------
-const FB_ENABLED = (typeof firebase !== "undefined" && firebase.firestore);
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
-  authDomain: "bela-mares-entregas.firebaseapp.com",
-  projectId: "bela-mares-entregas",
-  storageBucket: "bela-mares-entregas.firebasestorage.app",
-  messagingSenderId: "159475494264",
-  appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
-};
-
-let fbDb = null;
-let fbDoc = null;
-let applyingRemote = false;
-let pendingRemoteSave = null;
-let remoteStateFormat = null; // 'object' | 'string'
-
-function getLocalSyncMs(){
-  // usa o carimbo do próprio state (se existir)
-  const t = state && state.last_obras_refresh ? Date.parse(state.last_obras_refresh) : 0;
-  return isFinite(t) ? t : 0;
-}
-
-function setLocalSyncNow(){
-  state.last_obras_refresh = new Date().toISOString();
-}
-
-function initFirebaseSync(){
-  if(!FB_ENABLED) return;
+function saveState(localOnly=false){
   try{
-    if(!firebase.apps || !firebase.apps.length){
-      firebase.initializeApp(firebaseConfig);
-    }
-    fbDb = firebase.firestore();
-    fbDoc = fbDb.collection("apps").doc("bela_mares_checklist");
+    // salva sessão separada (local)
+    saveSession(state && state.session ? state.session : null);
 
-    // Escuta mudanças do "ao vivo"
-    fbDoc.onSnapshot((snap)=>{
-      if(!snap.exists) return;
-      const data = snap.data() || {};
-      const rawState = data.state;
-      if(remoteStateFormat == null){
-        remoteStateFormat = (typeof rawState === "string") ? "string" : "object";
-      }
+    // salva estado (sem sessão) no localStorage
+    const toStore = stripLocalOnly(state);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
+  }catch(e){}
 
-      let remote = null;
-      try{
-        if(typeof rawState === "string"){
-          remote = JSON.parse(rawState || "null");
-        }else{
-          remote = rawState || null;
-        }
-      }catch(e){
-        console.warn("Falha ao ler state remoto:", e);
-        return;
-      }
-      if(!remote) return;
-
-      // timestamp do remoto (preferência: updatedAtMs / updatedAt / last_obras_refresh)
-      let remoteMs = 0;
-      if(typeof data.updatedAtMs === "number") remoteMs = data.updatedAtMs;
-      else if(data.updatedAt && typeof data.updatedAt.toMillis === "function") remoteMs = data.updatedAt.toMillis();
-      else if(remote.last_obras_refresh) remoteMs = Date.parse(remote.last_obras_refresh) || 0;
-      else if(data.last_obras_refresh) remoteMs = Date.parse(data.last_obras_refresh) || 0;
-
-      const localMs = getLocalSyncMs();
-
-      // só aplica se o remoto for mais novo OU se o local estiver vazio (primeiro load)
-      const localSeemsEmpty = !state || !state.obras || Object.keys(state.obras||{}).length===0;
-      if(remoteMs > localMs || localSeemsEmpty){
-        applyingRemote = true;
-        state = remote;
-        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
-        applyingRemote = false;
-        try{ render(); }catch(e){}
-      }
-    });
-
-    // Faz um "push" inicial se o Firestore estiver vazio
-    fbDoc.get().then(s=>{
-      if(!s.exists || !s.data() || !s.data().state){
-        queueRemoteSave(true);
-      }
-    }).catch(()=>{});
-
-  }catch(err){
-    console.warn("Firebase sync desativado:", err);
-  }
+  // empurra pro Firestore (se habilitado) - exceto quando estamos aplicando remoto ou explicitamente localOnly
+  if(!localOnly) syncQueuePush();
 }
-
-function queueRemoteSave(force){
-  if(!FB_ENABLED || !fbDoc) return;
-  if(applyingRemote && !force) return;
-
-  if(pendingRemoteSave) clearTimeout(pendingRemoteSave);
-  pendingRemoteSave = setTimeout(()=>{
-    try{
-      // atualiza carimbo antes de subir
-      setLocalSyncNow();
-
-      const payload = {
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAtMs: Date.now(),
-        last_obras_refresh: state.last_obras_refresh
-      };
-
-      if(remoteStateFormat === "string"){
-        payload.state = JSON.stringify(state);
-      }else{
-        payload.state = state;
-      }
-
-      fbDoc.set(payload, { merge: true });
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
-    }catch(e){
-      console.warn("Falha ao salvar no Firestore:", e);
-    }
-  }, 450); // debounce
-}
-
-// intercepta saveState para também salvar no Firestore
-const __saveStateOriginal = saveState;
-saveState = function(){
-  __saveStateOriginal();
-  // se veio de aplicação remota, não replica
-  if(!applyingRemote){
-    queueRemoteSave(false);
-  }
-};
-
-// inicia sync ao abrir
-try{ initFirebaseSync(); }catch(e){}
-
-
-
-
 function safeName(obj){
   return (obj && obj.name) ? obj.name : "-";
 }
