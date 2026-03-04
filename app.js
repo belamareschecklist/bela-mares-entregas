@@ -115,35 +115,6 @@ function uid(prefix="id"){
 }
 
 const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
-
-// --- Helpers para "apartamentos virtuais" (evita estourar LocalStorage ao criar obra grande) ---
-function aptNumsByConfig(aptsPerBlock){
-  return (Number(aptsPerBlock)===16) ? APT_NUMS_16 : APT_NUMS_12;
-}
-function aptNumsForBlock(obra, block){
-  const keys = Object.keys(block?.apartments||{});
-  if(keys.length) return sortAptNums(keys);
-  return aptNumsByConfig(obra?.config?.aptsPerBlock||16);
-}
-function getOrMakeApartment(obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  if(!obra) return null;
-  const block = obra.blocks?.[blockId];
-  if(!block) return null;
-  if(!block.apartments) block.apartments = {};
-  const an = String(aptNum);
-  if(!block.apartments[an]){
-    block.apartments[an] = { num: an, pendencias: [], photos: [] };
-  }
-  return block.apartments[an];
-}
-function getApartmentView(obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
-  const an = String(aptNum);
-  return (block?.apartments && block.apartments[an]) ? block.apartments[an] : { num: an, pendencias: [], photos: [] };
-}
-
 const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
 function seed(){
@@ -289,10 +260,10 @@ let fbApp = null;
 let fbDb = null;
 let fbReady = false;
 let fbUnsub = null;
+let fbMetaUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
-let lastAction = null; // 'createObra' etc
 
 function initFirestore(){
   try{
@@ -302,6 +273,7 @@ function initFirestore(){
     fbReady = true;
 
     const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
+    const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
 
     // subscribe
     if(fbUnsub) try{ fbUnsub(); }catch(_){}
@@ -364,7 +336,69 @@ function initFirestore(){
         try{ render(); }catch(_){}
       });
     }catch(e){
-      console.warn("Falha ao assinar apartments:", e);
+      console.warn("Falha ao assinar apar
+
+    // subscribe META (obras/config) em documento separado para não esbarrar no limite de 1MiB do state/main.
+    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
+    fbMetaUnsub = metaRef.onSnapshot((snap)=>{
+      if(!snap || !snap.exists) return;
+      if(snap.metadata && snap.metadata.hasPendingWrites) return;
+
+      const data = snap.data() || {};
+      const raw = data.meta;
+      if(!raw) return;
+
+      let metaState = null;
+      try{
+        metaState = (typeof raw === "string") ? JSON.parse(raw) : raw;
+      }catch(e){
+        console.warn("Meta JSON inválido:", e);
+        return;
+      }
+      if(!metaState || metaState.version !== STATE_VERSION) return;
+
+      // Aplica meta sem sobrescrever apartments (que vêm do legado e/ou da coleção apartments)
+      try{
+        // preserva sessão local
+        const currentSession = (state && state.session) ? state.session : null;
+
+        // merge controlado
+        state.obras_index = Array.isArray(metaState.obras_index) ? metaState.obras_index : (state.obras_index||[]);
+        state.obras = state.obras || {};
+        if(metaState.obras){
+          for(const oid of Object.keys(metaState.obras)){
+            const om = metaState.obras[oid];
+            if(!om) continue;
+
+            if(!state.obras[oid]){
+              state.obras[oid] = { id: om.id, name: om.name, config: om.config, blocks: {} };
+            }else{
+              state.obras[oid].name = om.name;
+              state.obras[oid].config = om.config;
+              if(!state.obras[oid].blocks) state.obras[oid].blocks = {};
+            }
+
+            // garante blocos
+            if(om.blocks){
+              for(const bid of Object.keys(om.blocks)){
+                if(!state.obras[oid].blocks[bid]) state.obras[oid].blocks[bid] = { id: bid, apartments: {} };
+              }
+            }
+          }
+        }
+
+        if(currentSession) state.session = currentSession;
+      }catch(e){
+        console.warn("Falha ao aplicar meta remoto:", e);
+      }
+
+      // salva local e renderiza
+      safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+      try{ render(); }catch(_){}
+    }, (err)=>{
+      console.error("Firestore meta snapshot failed:", err);
+    });
+tments:", e);
     }
 
 });
@@ -385,18 +419,16 @@ function queueSaveToFirestore(pstate){
 
     try{
       // 1) Salva apenas META (pequeno) no state/main — não toca no campo 'state' gigante.
-      const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
+      const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
       const metaPayload = {
         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
         updatedAtMs: now,
         meta: JSON.stringify(persistableMetaState())
       };
       await metaRef.set(metaPayload, {merge:true});
-      try{ if(lastAction==='createObra') toast('Obra salva no servidor.'); }catch(_){ }
-      if(lastAction==='createObra') lastAction=null;
     }catch(e){
       console.error("Firestore meta save failed:", e);
-      try{ if(lastAction==='createObra') toast("ERRO ao criar obra (meta). Veja Console (F12)."); }catch(_){}
+      try{ toast("ERRO ao sincronizar (meta). Abra F12 > Console."); }catch(_){}
     }
 
     // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
@@ -579,9 +611,7 @@ function calcObraStats(obraId){
   const obra = state.obras[obraId];
   let total=0, conclu=0, aguard=0, pend=0;
   Object.values(obra.blocks).forEach(b=>{
-    const nums = aptNumsForBlock(obra, b);
-    nums.forEach(an=>{
-      const a = getApartmentView(obraId, b.id, an);
+    Object.values(b.apartments).forEach(a=>{
       total++;
       const ps = a.pendencias || [];
       const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
@@ -606,10 +636,8 @@ function aptStatus(apto){
   return { label:"Sem pendências", dot:"" };
 }
 
-function blockDots(obraId, block){
-  const obra = state.obras[obraId];
-  const nums = aptNumsForBlock(obra, block);
-  const apts = nums.map(an=>getApartmentView(obraId, block.id, an));
+function blockDots(block){
+  const apts = Object.values(block?.apartments||{});
   if(apts.length===0) return "";
   const cats = apts.map(a=>{
     const st = aptStatus(a);
@@ -1177,10 +1205,10 @@ function generateObraPDF(obraId){
 
   blocks.forEach(bid=>{
     const block = obra.blocks[bid];
-    const aptNums = aptNumsForBlock(obra, block);
+    const aptNums = sortAptNums(Object.keys(block.apartments||{}));
 
     aptNums.forEach(an=>{
-      const a = getOrMakeApartment(obraId, bid, an);
+      const a = block.apartments[an];
 
       if(!firstPage) doc.addPage();
       firstPage = false;
@@ -1680,23 +1708,24 @@ function addObra(id, name, numBlocks, aptsPerBlock){
   if(!id) return { ok:false, msg:"ID inválido" };
   if(state.obras[id]) return { ok:false, msg:"Já existe uma obra com esse ID" };
 
-  // cria obra (LEVE): não pré-cria todos os apartamentos para não estourar o LocalStorage.
-  // Os apartamentos são "virtuais" e são materializados apenas quando o usuário abre um apto
-  // ou quando há dados sincronizados no Firestore para aquele apto.
+  // cria obra (LEVE): não pré-cria apartamentos (evita estourar LocalStorage/quota).
   const nb = Number(numBlocks);
   const apb = Number(aptsPerBlock);
 
   const blocks = {};
   for(let b=1; b<=nb; b++){
     const bid = "B"+b;
-    blocks[bid] = { id: bid, apartments: {} }; // vazio por padrão (virtual)
+    blocks[bid] = { id: bid, apartments: {} }; // apartments virtuais
   }
 
   const obra = { id, name, config:{ numBlocks: nb, aptsPerBlock: apb }, blocks };
   state.obras[id] = obra;
+
+  // atualiza índice
+  if(!Array.isArray(state.obras_index)) state.obras_index = [];
   state.obras_index.push({ id, name, config: obra.config });
-  lastAction = 'createObra';
-  saveState();
+
+  saveState(); // isso já chama queueSaveToFirestore(meta)
   return { ok:true, msg:"Obra adicionada!" };
 }
 
