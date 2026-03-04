@@ -13,7 +13,7 @@ function safeSetItem(key, value){
   try{
     localStorage.setItem(key, value);
   }catch(e){
-    console.warn("LocalStorage cheio (quota). Cache local desativado para evitar travar o app.", e);
+    // LocalStorage cheio (quota). Cache local desativado para evitar travar o app.
     localSaveDisabled = true;
     try{ localStorage.removeItem(key); }catch(_){}
   }
@@ -256,59 +256,11 @@ function persistableMetaState(){
   return copy;
 }
 
-
-// Aplica META remoto (sem apartments) por cima do estado atual.
-// Importante: NÃO apaga apartments/pendências já existentes no legado.
-function applyRemoteMeta(metaObj, ts){
-  try{
-    if(!metaObj || typeof metaObj !== "object") return;
-    // Preserve sessão local
-    const currentSession = (state && state.session) ? state.session : null;
-
-    // Merge raso e depois merge de obras/blocks sem mexer em apartments
-    if(metaObj.session) delete metaObj.session;
-    state = Object.assign({}, state, metaObj);
-
-    if(metaObj.obras){
-      if(!state.obras) state.obras = {};
-      for(const oid of Object.keys(metaObj.obras)){
-        const obNew = metaObj.obras[oid];
-        if(!obNew) continue;
-        const obCur = state.obras[oid] || {};
-        const mergedOb = Object.assign({}, obCur, obNew);
-
-        if(obNew.blocks){
-          mergedOb.blocks = mergedOb.blocks || {};
-          for(const bid of Object.keys(obNew.blocks)){
-            const blkNew = obNew.blocks[bid];
-            const blkCur = (obCur.blocks && obCur.blocks[bid]) ? obCur.blocks[bid] : {};
-            const mergedBlk = Object.assign({}, blkCur, blkNew);
-
-            // Se o bloco atual tem apartments, mantém.
-            if(blkCur && blkCur.apartments && !mergedBlk.apartments){
-              mergedBlk.apartments = blkCur.apartments;
-            }
-            mergedOb.blocks[bid] = mergedBlk;
-          }
-        }
-
-        state.obras[oid] = mergedOb;
-      }
-    }
-
-    if(currentSession) state.session = currentSession;
-    if(!state._meta) state._meta = {};
-    state._meta.metaUpdatedAt = ts;
-
-    safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
-  }catch(_){}
-}
 let fbApp = null;
 let fbDb = null;
 let fbReady = false;
 let fbUnsub = null;
 let lastRemoteTs = 0;
-let lastRemoteMetaTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
 
@@ -331,24 +283,6 @@ function initFirestore(){
 
   const data = snap.data() || {};
   const remoteState = data.state;
-  const remoteMeta = data.meta;
-
-  // 1) Aplica META (obras/usuários/config) mesmo que não tenha 'state' (legado).
-  if(remoteMeta){
-    const mts = (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
-      (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() : null;
-    if(mts && mts > lastRemoteMetaTs){
-      lastRemoteMetaTs = mts;
-      try{
-        const mParsed = (typeof remoteMeta === "string") ? JSON.parse(remoteMeta) : remoteMeta;
-        if(mParsed && mParsed.version === STATE_VERSION){
-          applyRemoteMeta(mParsed, mts);
-        }
-      }catch(_){ }
-    }
-  }
-
-  // 2) O legado completo pode existir em 'state'. Se não existir, não aborta (meta já foi aplicado).
   if(!remoteState) return;
 
   // Usa updatedAtMs gravado no documento (estável entre cache/servidor).
@@ -428,7 +362,10 @@ function queueSaveToFirestore(pstate){
         meta: JSON.stringify(persistableMetaState())
       };
       await metaRef.set(metaPayload, {merge:true});
-    }catch(e){ /* silencioso */ }
+    }catch(e){
+      console.error("Firestore meta save failed:", e);
+      try{ toast("ERRO ao sincronizar (meta). Abra F12 > Console."); }catch(_){}
+    }
 
     // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
     try{
@@ -456,7 +393,10 @@ function queueSaveToFirestore(pstate){
         // aplica local (evita "piscar" em alguns casos)
         applyApartmentFromDoc(aptPayload);
       }
-    }catch(e){ /* silencioso */ }
+    }catch(e){
+      console.error("Firestore apartment save failed:", e);
+      try{ toast("ERRO ao sincronizar (apto). Abra F12 > Console."); }catch(_){}
+    }
 
     // keep local meta in sync (ms is fine for comparison)
     if(!state._meta) state._meta = {};
@@ -1301,7 +1241,11 @@ function renderBlock(container, obraId, blockId){
   const block = obra.blocks[blockId];
   const u = currentUser();
 
-  const apts = Object.values(block.apartments).sort((a,b)=>Number(a.num)-Number(b.num));
+  // Para obras novas, apartments pode estar vazio (gerado sob demanda).
+  // Renderiza a grade completa a partir da configuração, usando dados existentes se houver.
+  const nums = getAptNumsByConfig(obra.config?.aptsPerBlock);
+  const apts = nums.map(n => (block.apartments && block.apartments[String(n)]) ? block.apartments[String(n)] : { num:String(n), pendencias:[], photos:[] })
+                  .sort((a,b)=>Number(a.num)-Number(b.num));
 
   container.innerHTML = `
     <div class="row">
@@ -1345,7 +1289,11 @@ function renderApto(root){
   const { obraId, blockId, apto } = nav.params;
   const obra = state.obras[obraId];
   const block = obra?.blocks?.[blockId];
-  const apt = block?.apartments?.[apto];
+  let apt = block?.apartments?.[apto];
+  if(!apt){
+    apt = ensureApartment(obraId, blockId, apto);
+    if(apt){ saveState(); }
+  }
   if(!apt){ toast("Apartamento não encontrado"); return goto("obra",{ obraId }); }
 
   // execução só pode na obra vinculada
@@ -1704,21 +1652,49 @@ function addObra(id, name, numBlocks, aptsPerBlock){
   if(!id) return { ok:false, msg:"ID inválido" };
   if(state.obras[id]) return { ok:false, msg:"Já existe uma obra com esse ID" };
 
-  // cria obra
+  // IMPORTANTE: não cria a malha completa de apartamentos aqui.
+  // Isso estoura o limite de ~1MiB do Firestore (state/main) e faz a obra "sumir" ao atualizar.
+  // Vamos criar apenas os blocos (meta) e gerar apartamentos sob demanda.
   const blocks = {};
   for(let b=1;b<=Number(numBlocks);b++){
-    const bid="B"+b;
-    const apartments={};
-    const nums = (Number(aptsPerBlock)===16) ? APT_NUMS_16 : APT_NUMS_12;
-    nums.forEach(n=>apartments[n]={ num:n, pendencias:[], photos:[] });
-    blocks[bid]={ id:bid, apartments };
+    const bid = "B"+b;
+    blocks[bid] = { id: bid, apartments: {} };
   }
-  const obra={ id, name, config:{ numBlocks:Number(numBlocks), aptsPerBlock:Number(aptsPerBlock) }, blocks };
-  state.obras[id]=obra;
+
+  const obra = {
+    id,
+    name,
+    config:{ numBlocks:Number(numBlocks), aptsPerBlock:Number(aptsPerBlock) },
+    blocks
+  };
+
+  state.obras[id] = obra;
   state.obras_index.push({ id, name, config: obra.config });
-  saveState();
+
+  saveState(); // agora fica leve o suficiente para persistir e sincronizar
   return { ok:true, msg:"Obra adicionada!" };
 }
+
+
+function getAptNumsByConfig(aptsPerBlock){
+  const n = Number(aptsPerBlock);
+  return (n===16) ? APT_NUMS_16 : APT_NUMS_12;
+}
+
+// Garante que o apartamento exista em memória para poder editar/adicionar pendências.
+// Só cria quando o usuário realmente acessa o apto, evitando estourar o Firestore.
+function ensureApartment(obraId, blockId, aptNum){
+  const obra = state.obras[obraId];
+  if(!obra || !obra.blocks || !obra.blocks[blockId]) return null;
+  const block = obra.blocks[blockId];
+  if(!block.apartments) block.apartments = {};
+  const key = String(aptNum);
+  if(!block.apartments[key]){
+    block.apartments[key] = { num: key, pendencias: [], photos: [] };
+  }
+  return block.apartments[key];
+}
+
 
 function deleteObra(obraId){
   delete state.obras[obraId];
