@@ -13,7 +13,7 @@ function safeSetItem(key, value){
   try{
     localStorage.setItem(key, value);
   }catch(e){
-    // LocalStorage cheio (quota). Cache local desativado para evitar travar o app.
+    console.warn("LocalStorage cheio (quota). Cache local desativado para evitar travar o app.", e);
     localSaveDisabled = true;
     try{ localStorage.removeItem(key); }catch(_){}
   }
@@ -115,6 +115,35 @@ function uid(prefix="id"){
 }
 
 const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
+
+// --- Helpers para "apartamentos virtuais" (evita estourar LocalStorage ao criar obra grande) ---
+function aptNumsByConfig(aptsPerBlock){
+  return (Number(aptsPerBlock)===16) ? APT_NUMS_16 : APT_NUMS_12;
+}
+function aptNumsForBlock(obra, block){
+  const keys = Object.keys(block?.apartments||{});
+  if(keys.length) return sortAptNums(keys);
+  return aptNumsByConfig(obra?.config?.aptsPerBlock||16);
+}
+function getOrMakeApartment(obraId, blockId, aptNum){
+  const obra = state.obras[obraId];
+  if(!obra) return null;
+  const block = obra.blocks?.[blockId];
+  if(!block) return null;
+  if(!block.apartments) block.apartments = {};
+  const an = String(aptNum);
+  if(!block.apartments[an]){
+    block.apartments[an] = { num: an, pendencias: [], photos: [] };
+  }
+  return block.apartments[an];
+}
+function getApartmentView(obraId, blockId, aptNum){
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  const an = String(aptNum);
+  return (block?.apartments && block.apartments[an]) ? block.apartments[an] : { num: an, pendencias: [], photos: [] };
+}
+
 const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
 function seed(){
@@ -263,6 +292,7 @@ let fbUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
+let lastAction = null; // 'createObra' etc
 
 function initFirestore(){
   try{
@@ -362,9 +392,11 @@ function queueSaveToFirestore(pstate){
         meta: JSON.stringify(persistableMetaState())
       };
       await metaRef.set(metaPayload, {merge:true});
+      try{ if(lastAction==='createObra') toast('Obra salva no servidor.'); }catch(_){ }
+      if(lastAction==='createObra') lastAction=null;
     }catch(e){
       console.error("Firestore meta save failed:", e);
-      try{ toast("ERRO ao sincronizar (meta). Abra F12 > Console."); }catch(_){}
+      try{ if(lastAction==='createObra') toast("ERRO ao criar obra (meta). Veja Console (F12)."); }catch(_){}
     }
 
     // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
@@ -547,7 +579,9 @@ function calcObraStats(obraId){
   const obra = state.obras[obraId];
   let total=0, conclu=0, aguard=0, pend=0;
   Object.values(obra.blocks).forEach(b=>{
-    Object.values(b.apartments).forEach(a=>{
+    const nums = aptNumsForBlock(obra, b);
+    nums.forEach(an=>{
+      const a = getApartmentView(obraId, b.id, an);
       total++;
       const ps = a.pendencias || [];
       const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
@@ -572,8 +606,10 @@ function aptStatus(apto){
   return { label:"Sem pendências", dot:"" };
 }
 
-function blockDots(block){
-  const apts = Object.values(block?.apartments||{});
+function blockDots(obraId, block){
+  const obra = state.obras[obraId];
+  const nums = aptNumsForBlock(obra, block);
+  const apts = nums.map(an=>getApartmentView(obraId, block.id, an));
   if(apts.length===0) return "";
   const cats = apts.map(a=>{
     const st = aptStatus(a);
@@ -1141,10 +1177,10 @@ function generateObraPDF(obraId){
 
   blocks.forEach(bid=>{
     const block = obra.blocks[bid];
-    const aptNums = sortAptNums(Object.keys(block.apartments||{}));
+    const aptNums = aptNumsForBlock(obra, block);
 
     aptNums.forEach(an=>{
-      const a = block.apartments[an];
+      const a = getOrMakeApartment(obraId, bid, an);
 
       if(!firstPage) doc.addPage();
       firstPage = false;
@@ -1241,11 +1277,7 @@ function renderBlock(container, obraId, blockId){
   const block = obra.blocks[blockId];
   const u = currentUser();
 
-  // Para obras novas, apartments pode estar vazio (gerado sob demanda).
-  // Renderiza a grade completa a partir da configuração, usando dados existentes se houver.
-  const nums = getAptNumsByConfig(obra.config?.aptsPerBlock);
-  const apts = nums.map(n => (block.apartments && block.apartments[String(n)]) ? block.apartments[String(n)] : { num:String(n), pendencias:[], photos:[] })
-                  .sort((a,b)=>Number(a.num)-Number(b.num));
+  const apts = Object.values(block.apartments).sort((a,b)=>Number(a.num)-Number(b.num));
 
   container.innerHTML = `
     <div class="row">
@@ -1289,11 +1321,7 @@ function renderApto(root){
   const { obraId, blockId, apto } = nav.params;
   const obra = state.obras[obraId];
   const block = obra?.blocks?.[blockId];
-  let apt = block?.apartments?.[apto];
-  if(!apt){
-    apt = ensureApartment(obraId, blockId, apto);
-    if(apt){ saveState(); }
-  }
+  const apt = block?.apartments?.[apto];
   if(!apt){ toast("Apartamento não encontrado"); return goto("obra",{ obraId }); }
 
   // execução só pode na obra vinculada
@@ -1652,49 +1680,25 @@ function addObra(id, name, numBlocks, aptsPerBlock){
   if(!id) return { ok:false, msg:"ID inválido" };
   if(state.obras[id]) return { ok:false, msg:"Já existe uma obra com esse ID" };
 
-  // IMPORTANTE: não cria a malha completa de apartamentos aqui.
-  // Isso estoura o limite de ~1MiB do Firestore (state/main) e faz a obra "sumir" ao atualizar.
-  // Vamos criar apenas os blocos (meta) e gerar apartamentos sob demanda.
+  // cria obra (LEVE): não pré-cria todos os apartamentos para não estourar o LocalStorage.
+  // Os apartamentos são "virtuais" e são materializados apenas quando o usuário abre um apto
+  // ou quando há dados sincronizados no Firestore para aquele apto.
+  const nb = Number(numBlocks);
+  const apb = Number(aptsPerBlock);
+
   const blocks = {};
-  for(let b=1;b<=Number(numBlocks);b++){
+  for(let b=1; b<=nb; b++){
     const bid = "B"+b;
-    blocks[bid] = { id: bid, apartments: {} };
+    blocks[bid] = { id: bid, apartments: {} }; // vazio por padrão (virtual)
   }
 
-  const obra = {
-    id,
-    name,
-    config:{ numBlocks:Number(numBlocks), aptsPerBlock:Number(aptsPerBlock) },
-    blocks
-  };
-
+  const obra = { id, name, config:{ numBlocks: nb, aptsPerBlock: apb }, blocks };
   state.obras[id] = obra;
   state.obras_index.push({ id, name, config: obra.config });
-
-  saveState(); // agora fica leve o suficiente para persistir e sincronizar
+  lastAction = 'createObra';
+  saveState();
   return { ok:true, msg:"Obra adicionada!" };
 }
-
-
-function getAptNumsByConfig(aptsPerBlock){
-  const n = Number(aptsPerBlock);
-  return (n===16) ? APT_NUMS_16 : APT_NUMS_12;
-}
-
-// Garante que o apartamento exista em memória para poder editar/adicionar pendências.
-// Só cria quando o usuário realmente acessa o apto, evitando estourar o Firestore.
-function ensureApartment(obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  if(!obra || !obra.blocks || !obra.blocks[blockId]) return null;
-  const block = obra.blocks[blockId];
-  if(!block.apartments) block.apartments = {};
-  const key = String(aptNum);
-  if(!block.apartments[key]){
-    block.apartments[key] = { num: key, pendencias: [], photos: [] };
-  }
-  return block.apartments[key];
-}
-
 
 function deleteObra(obraId){
   delete state.obras[obraId];
