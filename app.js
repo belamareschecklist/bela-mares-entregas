@@ -256,11 +256,39 @@ function persistableMetaState(){
   return copy;
 }
 
+function applyMetaState(metaObj){
+  // Aplica somente campos "leves" que precisam sincronizar (sem mexer no legado de apartments).
+  if(!metaObj || typeof metaObj!=="object") return;
+
+  if(Array.isArray(metaObj.users)) state.users = metaObj.users;
+  if(Array.isArray(metaObj.obras_index)) state.obras_index = metaObj.obras_index;
+
+  if(metaObj.obras && typeof metaObj.obras==="object"){
+    state.obras = state.obras || {};
+    for(const oid of Object.keys(metaObj.obras)){
+      const mo = metaObj.obras[oid];
+      if(!mo) continue;
+      if(!state.obras[oid]) state.obras[oid] = mo;
+      else{
+        state.obras[oid].name = mo.name || state.obras[oid].name;
+        state.obras[oid].config = mo.config || state.obras[oid].config;
+        if(mo.blocks){
+          state.obras[oid].blocks = state.obras[oid].blocks || {};
+          for(const bid of Object.keys(mo.blocks)){
+            if(!state.obras[oid].blocks[bid]) state.obras[oid].blocks[bid] = mo.blocks[bid];
+          }
+        }
+      }
+    }
+  }
+}
+
 let fbApp = null;
 let fbDb = null;
 let fbReady = false;
 let fbUnsub = null;
 let lastRemoteTs = 0;
+let lastRemoteMetaTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
 
@@ -282,61 +310,50 @@ function initFirestore(){
   if(snap.metadata && snap.metadata.hasPendingWrites) return;
 
   const data = snap.data() || {};
-  const remoteState = data.state;
-  if(!remoteState) return;
 
-  // Usa updatedAtMs gravado no documento (estável entre cache/servidor).
-  const ts =
-    (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
-    (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
-    null;
-
-  if(!ts) return;
-  if(ts <= lastRemoteTs) return;
-  lastRemoteTs = ts;
-
-  try{
-    const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
-    if(!parsed || parsed.version !== STATE_VERSION) return;
-
-    isApplyingRemote = true;
-
-    // Não sobrescreve sessão local (cada aparelho pode estar logado com usuário diferente)
-    const currentSession = (state && state.session) ? state.session : null;
-    if(parsed.session) delete parsed.session;
-
-    state = parsed;
-    if(currentSession) state.session = currentSession;
-
-    if(!state._meta) state._meta = {};
-    state._meta.updatedAt = ts;
-
-    safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
-
-    try{ render(); }catch(_){}
-  }catch(e){
-    console.warn("Erro ao aplicar estado remoto:", e);
-  }finally{
-    isApplyingRemote = false;
+  // 1) Carrega o LEGADO (campo 'state') apenas na 1ª vez.
+  if(!window.__legacyLoadedOnce){
+    const remoteState = data.state;
+    if(remoteState){
+      // use timestamp do state apenas se existir um campo dedicado; caso contrário, aplica 1x e nunca mais sobrescreve.
+      try{
+        const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
+        if(parsed && parsed.vers===STATE_VERSION){
+          isApplyingRemote = true;
+          state = parsed;
+          // garante session local
+          state.session = state.session || {};
+          isApplyingRemote = false;
+          window.__legacyLoadedOnce = true;
+          try{ safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal())); }catch(_){}
+        }
+      }catch(_){}
+    }else{
+      window.__legacyLoadedOnce = true;
+    }
   }
 
-    // subscribe apartments (somente docs migrados/alterados). Mantém contagens e tela "ao vivo" sem estourar 1MiB.
-    try{
-      const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
-      if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
-      fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
-        if(!qs) return;
-        if(qs.metadata && qs.metadata.hasPendingWrites) return;
-        qs.docChanges().forEach((ch)=>{
-          const d = ch.doc && ch.doc.exists ? (ch.doc.data()||{}) : null;
-          applyApartmentFromDoc(d);
-        });
-        try{ render(); }catch(_){}
-      });
-    }catch(e){
-      console.warn("Falha ao assinar apartments:", e);
-    }
+  // 2) Aplica META (obras_index, usuários etc.) vindo do servidor.
+  const remoteMeta = data.meta;
+  if(remoteMeta){
+    const mts =
+      (typeof data.metaUpdatedAtMs === "number" && isFinite(data.metaUpdatedAtMs)) ? data.metaUpdatedAtMs :
+      (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
+      null;
 
+    if(mts && mts > lastRemoteMetaTs){
+      lastRemoteMetaTs = mts;
+      try{
+        const metaObj = (typeof remoteMeta === "string") ? JSON.parse(remoteMeta) : remoteMeta;
+        if(metaObj && typeof metaObj === "object"){
+          applyMetaState(metaObj);
+          try{ safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal())); }catch(_){}
+        }
+      }catch(_){}
+    }
+  }
+
+  try{ render(); }catch(_){}
 });
   }catch(e){
     fbReady = false;
@@ -357,15 +374,13 @@ function queueSaveToFirestore(pstate){
       // 1) Salva apenas META (pequeno) no state/main — não toca no campo 'state' gigante.
       const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
       const metaPayload = {
-        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAtMs: now,
+        metaUpdatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+        metaUpdatedAtMs: now,
         meta: JSON.stringify(persistableMetaState())
       };
       await metaRef.set(metaPayload, {merge:true});
     }catch(e){
-      console.error("Firestore meta save failed:", e);
-      try{ toast("ERRO ao sincronizar (meta). Abra F12 > Console."); }catch(_){}
-    }
+          }
 
     // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
     try{
@@ -394,9 +409,7 @@ function queueSaveToFirestore(pstate){
         applyApartmentFromDoc(aptPayload);
       }
     }catch(e){
-      console.error("Firestore apartment save failed:", e);
-      try{ toast("ERRO ao sincronizar (apto). Abra F12 > Console."); }catch(_){}
-    }
+          }
 
     // keep local meta in sync (ms is fine for comparison)
     if(!state._meta) state._meta = {};
