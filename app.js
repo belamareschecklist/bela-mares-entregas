@@ -155,6 +155,7 @@ function seed(){
       { id:"qualidade_01", name:"Qualidade 01", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
       { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
       { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
+      { id:"exec_athenas", name:"Execução Athenas", role:"execucao", pin:"1234", obraIds:["athenas"], active:true },
       { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
       { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
       { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true },
@@ -289,6 +290,7 @@ let fbApp = null;
 let fbDb = null;
 let fbReady = false;
 let fbUnsub = null;
+let fbMetaUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
@@ -305,7 +307,55 @@ function initFirestore(){
 
     // subscribe
     if(fbUnsub) try{ fbUnsub(); }catch(_){}
-    fbUnsub = ref.onSnapshot((snap)=>{
+    
+
+    // subscribe META (obras/config/usuários) em doc separado (state/meta) para não estourar 1MB do state/main
+    const metaRefDoc = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
+    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
+    fbMetaUnsub = metaRefDoc.onSnapshot((snap)=>{
+      if(!snap || !snap.exists) return;
+      if(snap.metadata && snap.metadata.hasPendingWrites) return;
+
+      const data = snap.data() || {};
+      if(!data.meta) return;
+
+      try{
+        const parsed = JSON.parse(data.meta);
+        // Aplica SOMENTE meta (não toca em apartments/pendências antigas)
+        if(parsed && typeof parsed === "object"){
+          if(parsed.users) state.users = parsed.users;
+          if(parsed.obras_index) state.obras_index = parsed.obras_index;
+          if(parsed.obras){
+            // não sobrescreve apartments existentes
+            for(const oid of Object.keys(parsed.obras||{})){
+              const incoming = parsed.obras[oid];
+              if(!state.obras[oid]) state.obras[oid] = incoming;
+              else{
+                // merge raso
+                state.obras[oid].id = incoming.id || state.obras[oid].id;
+                state.obras[oid].name = incoming.name || state.obras[oid].name;
+                state.obras[oid].config = incoming.config || state.obras[oid].config;
+                if(incoming.blocks){
+                  state.obras[oid].blocks = state.obras[oid].blocks || {};
+                  for(const bid of Object.keys(incoming.blocks)){
+                    const inBlk = incoming.blocks[bid];
+                    const curBlk = state.obras[oid].blocks[bid] || { id: bid, apartments: {} };
+                    curBlk.id = inBlk.id || curBlk.id;
+                    // mantém apartments locais
+                    state.obras[oid].blocks[bid] = curBlk;
+                  }
+                }
+              }
+            }
+          }
+        }
+        try{ render(); }catch(_){}
+      }catch(e){
+        console.warn("Meta inválido no Firestore:", e);
+      }
+    });
+
+fbUnsub = ref.onSnapshot((snap)=>{
   if(!snap || !snap.exists) return;
 
   // Ignora eco local (escrita pendente). A gente só aplica quando veio do servidor.
