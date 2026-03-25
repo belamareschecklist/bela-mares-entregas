@@ -184,25 +184,27 @@ function seed(){
   makeObra("costa_rica", "Costa Rica - Entregas", 17, 12);
   makeObra("costa_brava", "Costa Brava - Entregas", 6, 12);
 
+  // demo
   state.obras.costa_rica.blocks.B17.apartments["204"].pendencias.push({
     id: uid("p"),
     title: "Rejunte falhando",
     category: "Revestimento",
     location: "Cozinha",
-    state: "pendente",
+    state: "pendente", // pendente|feito|conferido|reprovado
     createdAt: new Date().toISOString(),
     createdBy: { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade" },
     doneAt:null, doneBy:null,
     reviewedAt:null, reviewedBy:null,
     rejection:null,
     reopenedAt:null,
-    photos: []
-  });
+      photos: []
+    });
 
   return state;
 }
 
 function loadState(){
+  // 1) localStorage (fast)  2) Firestore (if configured) will overwrite via listener
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
@@ -219,6 +221,7 @@ function loadState(){
 let state = loadState();
 ensureSystemDefaults();
 
+// ---- Firestore (live sync) ----
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
   authDomain: "bela-mares-entregas.firebaseapp.com",
@@ -228,6 +231,10 @@ const FIREBASE_CONFIG = {
   appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
 };
 
+
+// --- Live sync sem estourar 1MiB ---
+// Mantém o legado em apps/bela_mares_checklist/state/main (somente leitura).
+// Novas alterações por apartamento vão para: apps/bela_mares_checklist/apartments/{obraId}__{blockId}__{apto}
 const APARTMENTS_COLLECTION = "apartments";
 let fbApartmentsUnsub = null;
 
@@ -253,8 +260,10 @@ function applyApartmentFromDoc(doc){
     const apto = String(doc.apto);
     if(!obraId || !blockId || !apto) return;
     const target = ensureAptPath(obraId, blockId, apto);
+    // substitui somente os campos do apartamento (não mexe no resto do state)
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : (target.pendencias||[]);
     target.photos = Array.isArray(doc.photos) ? doc.photos : (target.photos||[]);
+    // marca timestamp local
     if(!target._meta) target._meta = {};
     if(typeof doc.updatedAtMs === "number") target._meta.updatedAtMs = doc.updatedAtMs;
   }catch(e){
@@ -262,12 +271,7 @@ function applyApartmentFromDoc(doc){
   }
 }
 
-function persistableState(){
-  const copy = JSON.parse(JSON.stringify(state));
-  if(copy && copy.session) delete copy.session;
-  return copy;
-}
-
+// Salva um estado "meta" pequeno (sem apartments) para evitar LocalStorage/quota e não tentar sobrescrever o legado gigante.
 function persistableMetaState(){
   const copy = JSON.parse(JSON.stringify(persistableState()));
   if(copy && copy.obras){
@@ -291,7 +295,7 @@ let fbMetaUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
-let lastAction = null;
+let lastAction = null; // 'createObra'
 
 function normalizeCity(v){
   const s = String(v||"").trim().toLowerCase();
@@ -299,11 +303,11 @@ function normalizeCity(v){
   return "valparaiso";
 }
 
-let _testCleanupDone = false;
-
 function ensureSystemDefaults(){
+  // Remove login de execução pré-criado do Athenas; criação deve ser manual ao criar a obra.
   state.users = (state.users||[]).filter(u => !(u && u.id==="exec_athenas" && u.role==="execucao"));
 
+  // Renomeia qualidade_01 -> qualidade_valparaiso preservando PIN/ativo.
   const qOld = (state.users||[]).find(u=>u && u.id==="qualidade_01");
   const qVal = (state.users||[]).find(u=>u && u.id==="qualidade_valparaiso");
   if(qOld && !qVal){
@@ -319,50 +323,8 @@ function ensureSystemDefaults(){
     state.users.push({ id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:[], active:true });
   }
 
-  if(!_testCleanupDone){
-    const testIds = new Set(["athenas","esplendore"]);
-    let changed = false;
-
-    state.obras = state.obras || {};
-    state.obras_index = state.obras_index || [];
-    state.users = state.users || [];
-
-    for(const oid of Object.keys(state.obras)){
-      if(testIds.has(oid)){
-        delete state.obras[oid];
-        changed = true;
-      }
-    }
-
-    const beforeIdx = state.obras_index.length;
-    state.obras_index = state.obras_index.filter(o => !testIds.has(o.id));
-    if(state.obras_index.length !== beforeIdx) changed = true;
-
-    const beforeUsers = state.users.length;
-    state.users = state.users.filter(u=>{
-      if(!u) return false;
-      if(u.role === "execucao"){
-        const uid = String(u.id||"").toLowerCase();
-        const obraIds = u.obraIds || [];
-        if(uid.includes("athenas") || uid.includes("esplendore")) return false;
-        if(obraIds.some(x => testIds.has(String(x||"").toLowerCase()))) return false;
-      }
-      return true;
-    });
-    if(state.users.length !== beforeUsers) changed = true;
-
-    _testCleanupDone = true;
-
-    if(changed){
-      try{
-        setTimeout(()=>{
-          try{ saveState(); }catch(_){}
-        }, 0);
-      }catch(_){}
-    }
-  }
-
-  const legacyVal = new Set(["park_rubi","costa_brava","costa_rica"]);
+  // Marca cidades das obras já existentes.
+  const legacyVal = new Set(["park_rubi","costa_brava","costa_rica","athenas"]);
   state.obras = state.obras || {};
   state.obras_index = state.obras_index || [];
   for(const oid of Object.keys(state.obras)){
@@ -414,8 +376,11 @@ function initFirestore(){
 
     const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
 
+    // subscribe
     if(fbUnsub) try{ fbUnsub(); }catch(_){}
+    
 
+    // subscribe META (obras/config/usuários) em doc separado (state/meta) para não estourar 1MB do state/main
     const metaRefDoc = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
     if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
     fbMetaUnsub = metaRefDoc.onSnapshot((snap)=>{
@@ -427,14 +392,17 @@ function initFirestore(){
 
       try{
         const parsed = JSON.parse(data.meta);
+        // Aplica SOMENTE meta (não toca em apartments/pendências antigas)
         if(parsed && typeof parsed === "object"){
           if(parsed.users) state.users = parsed.users;
           if(parsed.obras_index) state.obras_index = parsed.obras_index;
           if(parsed.obras){
+            // não sobrescreve apartments existentes
             for(const oid of Object.keys(parsed.obras||{})){
               const incoming = parsed.obras[oid];
               if(!state.obras[oid]) state.obras[oid] = incoming;
               else{
+                // merge raso
                 state.obras[oid].id = incoming.id || state.obras[oid].id;
                 state.obras[oid].name = incoming.name || state.obras[oid].name;
                 state.obras[oid].city = incoming.city || state.obras[oid].city || "valparaiso";
@@ -445,6 +413,7 @@ function initFirestore(){
                     const inBlk = incoming.blocks[bid];
                     const curBlk = state.obras[oid].blocks[bid] || { id: bid, apartments: {} };
                     curBlk.id = inBlk.id || curBlk.id;
+                    // mantém apartments locais
                     state.obras[oid].blocks[bid] = curBlk;
                   }
                 }
@@ -453,85 +422,93 @@ function initFirestore(){
           }
         }
         ensureSystemDefaults();
-        try{ render(); }catch(_){ }
+        try{ render(); }catch(_){}
       }catch(e){
         console.warn("Meta inválido no Firestore:", e);
       }
     });
 
-    fbUnsub = ref.onSnapshot((snap)=>{
-      if(!snap || !snap.exists) return;
-      if(snap.metadata && snap.metadata.hasPendingWrites) return;
+fbUnsub = ref.onSnapshot((snap)=>{
+  if(!snap || !snap.exists) return;
 
-      const data = snap.data() || {};
-      const remoteState = data.state;
-      if(!remoteState) return;
+  // Ignora eco local (escrita pendente). A gente só aplica quando veio do servidor.
+  if(snap.metadata && snap.metadata.hasPendingWrites) return;
 
-      const ts =
-        (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
-        (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
-        null;
+  const data = snap.data() || {};
+  const remoteState = data.state;
+  if(!remoteState) return;
 
-      if(!ts) return;
-      if(ts <= lastRemoteTs) return;
-      lastRemoteTs = ts;
+  // Usa updatedAtMs gravado no documento (estável entre cache/servidor).
+  const ts =
+    (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
+    (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
+    null;
 
-      try{
-        const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
-        if(!parsed || parsed.version !== STATE_VERSION) return;
+  if(!ts) return;
+  if(ts <= lastRemoteTs) return;
+  lastRemoteTs = ts;
 
-        isApplyingRemote = true;
+  try{
+    const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
+    if(!parsed || parsed.version !== STATE_VERSION) return;
 
-        const currentSession = (state && state.session) ? state.session : null;
-        if(parsed.session) delete parsed.session;
+    isApplyingRemote = true;
 
-        state = parsed;
-        if(currentSession) state.session = currentSession;
+    // Não sobrescreve sessão local (cada aparelho pode estar logado com usuário diferente)
+    const currentSession = (state && state.session) ? state.session : null;
+    if(parsed.session) delete parsed.session;
 
-        ensureSystemDefaults();
-        if(!state._meta) state._meta = {};
-        state._meta.updatedAt = ts;
+    state = parsed;
+    if(currentSession) state.session = currentSession;
 
-        safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+    ensureSystemDefaults();
+    if(!state._meta) state._meta = {};
+    state._meta.updatedAt = ts;
 
-        try{ render(); }catch(_){ }
-      }catch(e){
-        console.warn("Erro ao aplicar estado remoto:", e);
-      }finally{
-        isApplyingRemote = false;
-      }
+    safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
 
-      try{
-        const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
-        if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
-        fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
-          if(!qs) return;
-          if(qs.metadata && qs.metadata.hasPendingWrites) return;
-          qs.docChanges().forEach((ch)=>{
-            if(ch.type==="removed") return;
-            const data = ch.doc.data() || {};
-            applyApartmentFromDoc(data);
-          });
-          try{ render(); }catch(_){ }
+    try{ render(); }catch(_){}
+  }catch(e){
+    console.warn("Erro ao aplicar estado remoto:", e);
+  }finally{
+    isApplyingRemote = false;
+  }
+
+    // subscribe apartments (somente docs migrados/alterados). Mantém contagens e tela "ao vivo" sem estourar 1MiB.
+    try{
+      const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
+      if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
+      fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
+        if(!qs) return;
+        if(qs.metadata && qs.metadata.hasPendingWrites) return;
+        qs.docChanges().forEach((ch)=>{
+          if(ch.type==="removed") return;
+          const data = ch.doc.data() || {};
+          applyApartmentFromDoc(data);
         });
-      }catch(e){
-        console.warn("Falha no listener de apartments:", e);
-      }
-    });
+        try{ render(); }catch(_){}
+      });
+    }catch(e){
+      console.warn("Falha no listener de apartments:", e);
+    }
+});
   }catch(e){
     console.warn("Falha ao iniciar Firestore:", e);
   }
 }
+
 
 function queueSaveToFirestore(pstate){
   if(!fbReady) return;
   if(saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     const now = Date.now();
+    // don't upload while applying remote snapshot
     if(isApplyingRemote) return;
 
     try{
       ensureSystemDefaults();
+      // 1) Salva apenas META (pequeno) no state/main — não toca no campo 'state' gigante.
       const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
       const metaPayload = {
         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
@@ -542,9 +519,10 @@ function queueSaveToFirestore(pstate){
       if(lastAction==='createObra') lastAction = null;
     }catch(e){
       console.error("Firestore meta save failed:", e);
-      try{ if(lastAction==='createObra') toast('ERRO ao criar obra. Abra F12 > Console.'); }catch(_){ }
+      try{ if(lastAction==='createObra') toast('ERRO ao criar obra. Abra F12 > Console.'); }catch(_){}
     }
 
+    // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
     try{
       if(nav && nav.screen==="apto" && nav.params && nav.params.obraId && nav.params.blockId && nav.params.apto){
         const obraId = nav.params.obraId;
@@ -566,28 +544,46 @@ function queueSaveToFirestore(pstate){
         };
 
         await aRef.set(aptPayload, {merge:true});
+
+        // aplica local (evita "piscar" em alguns casos)
         applyApartmentFromDoc(aptPayload);
       }
     }catch(e){
       console.error("Firestore apartment save failed:", e);
-      try{ toast("ERRO ao sincronizar (apto). Abra F12 > Console."); }catch(_){ }
+      try{ toast("ERRO ao sincronizar (apto). Abra F12 > Console."); }catch(_){}
     }
 
+    // keep local meta in sync (ms is fine for comparison)
     if(!state._meta) state._meta = {};
     state._meta.updatedAt = now;
     safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
   }, 400);
 }
 
+function persistableState(){
+  // Never persist session globally; session is per-device (SESSION_KEY)
+  const copy = JSON.parse(JSON.stringify(state));
+  if(copy && copy.session) delete copy.session;
+  return copy;
+}
+
 function saveState(){
   const pstate = persistableState();
   safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+  // live sync (if enabled)
   try{ queueSaveToFirestore(pstate); }catch(_){ }
 }
 
-function safeName(obj){ return (obj && obj.name) ? obj.name : "-"; }
-function safeRole(obj){ return (obj && obj.role) ? obj.role : "-"; }
-function ensureEvents(p){ if(!p.events) p.events = []; return p.events; }
+function safeName(obj){
+  return (obj && obj.name) ? obj.name : "-";
+}
+function safeRole(obj){
+  return (obj && obj.role) ? obj.role : "-";
+}
+function ensureEvents(p){
+  if(!p.events) p.events = [];
+  return p.events;
+}
 function pushEvent(p, type, u, extra){
   const ev = Object.assign({
     type,
@@ -618,19 +614,48 @@ function currentUser(){
   return state.users.find(u=>String(u.id).toLowerCase()===sid && u.active) || null;
 }
 
-function canViewOnly(u){ return ["diretor","engenheiro","coordenador"].includes(u.role); }
-function canCreate(u){ return ["qualidade","supervisor"].includes(u.role); }
-function canMarkDone(u){ return u.role==="execucao"; }
-function canReview(u){ return u.role==="supervisor"; }
-function canManageObras(u){ return ["qualidade","supervisor"].includes(u.role); }
-function canManageUsers(u){ return ["qualidade","supervisor"].includes(u.role); }
-function canResetData(u){ return u && u.role==="supervisor"; }
-function canCreateSupervisor(u){ return u.role==="supervisor"; }
-function canDeleteObra(u){ return u.role==="supervisor"; }
-function canReopen(u){ return ["qualidade","supervisor"].includes(u.role); }
+function canViewOnly(u){
+  return ["diretor","engenheiro","coordenador"].includes(u.role);
+}
+function canCreate(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
+function canMarkDone(u){
+  return u.role==="execucao";
+}
+function canReview(u){
+  return u.role==="supervisor";
+}
+
+function canManageObras(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
+
+function canManageUsers(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
+
+function canResetData(u){
+  return u && u.role==="supervisor";
+}
+function canCreateSupervisor(u){
+  return u.role==="supervisor";
+}
+function canDeleteObra(u){
+  return u.role==="supervisor";
+}
+
+function canReopen(u){
+  return ["qualidade","supervisor"].includes(u.role);
+}
 
 const nav = { screen:"login", params:{} };
-function goto(screen, params={}){ nav.screen = screen; nav.params = params; render(); }
+
+function goto(screen, params={}){
+  nav.screen = screen;
+  nav.params = params;
+  render();
+}
 
 function setTopbar(){
   const u = currentUser();
@@ -653,7 +678,10 @@ function setTopbar(){
     back.style.display = "none";
   }
 
-  if(logout) logout.onclick = ()=>{ setSessionUserId(""); goto("login"); };
+  if(logout) logout.onclick = ()=>{
+    setSessionUserId("");
+    goto("login");
+  };
 
   if(back) back.onclick = ()=>{
     const u = currentUser();
@@ -675,7 +703,9 @@ function setTopbar(){
   }
 }
 
-function sortAptNums(nums){ return [...nums].sort((a,b)=>Number(a)-Number(b)); }
+function sortAptNums(nums){
+  return [...nums].sort((a,b)=>Number(a)-Number(b));
+}
 function aptStatusClass(obraId, blockId, an){
   const a = getApartmentView(obraId, blockId, an);
   const ps = a.pendencias||[];
@@ -747,7 +777,10 @@ function openModal(html){
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = html;
   document.body.appendChild(backdrop);
-  return { backdrop, close(){ backdrop.remove(); } };
+  return {
+    backdrop,
+    close(){ backdrop.remove(); }
+  };
 }
 
 function render(){
@@ -755,7 +788,11 @@ function render(){
   const root = $("#app");
   const u = currentUser();
 
-  if(!u && nav.screen!=="login"){ nav.screen="login"; nav.params={}; }
+  // first gate
+  if(!u && nav.screen!=="login"){
+    nav.screen="login";
+    nav.params={};
+  }
 
   if(nav.screen==="login") return renderLogin(root);
   if(nav.screen==="dash") return renderDash(root);
@@ -765,6 +802,7 @@ function render(){
   if(nav.screen==="users") return renderUsers(root);
   if(nav.screen==="settings") return renderSettings(root);
 
+  // fallback
   nav.screen = "login";
   nav.params = {};
   return renderLogin(root);
@@ -823,47 +861,11 @@ function renderDash(root){
   if(!u) return goto("login");
   if(!canViewOnly(u)) return goto("home");
 
-  const obrasVisiveis = visibleObrasForUser(u);
-  const valparaiso = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="valparaiso");
-  const aguaslindas = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="aguaslindas");
-
-  const stats = obrasVisiveis.map(o=>{
+  const stats = visibleObrasForUser(u).map(o=>{
     const s = calcObraStats(o.id);
-    return { id:o.id, name:o.name, city:o.city, ...s };
+    return { id:o.id, name:o.name, ...s };
   });
-
-  const total = stats.reduce((a,s)=>({
-    total:a.total+s.total,
-    semVistoria:a.semVistoria+s.semVistoria,
-    conclu:a.conclu+s.conclu,
-    aguard:a.aguard+s.aguard,
-    pend:a.pend+s.pend
-  }), {total:0, semVistoria:0, conclu:0, aguard:0, pend:0});
-
-  function renderSection(title, arr){
-    if(!arr.length) return "";
-    return `
-      <tr>
-        <td colspan="7" style="padding:12px 0 8px 0;border-bottom:1px solid #e5e7eb;background:transparent">
-          <span class="small" style="font-weight:700">${title}</span>
-        </td>
-      </tr>
-      ${arr.map(s=>{
-        const stats = calcObraStats(s.id);
-        return `
-          <tr>
-            <td><b>${esc(s.name)}</b></td>
-            <td style="text-align:center"><b>${stats.total}</b></td>
-            <td style="text-align:center"><b>${stats.semVistoria}</b></td>
-            <td style="text-align:center"><b>${stats.pend}</b></td>
-            <td style="text-align:center"><b>${stats.aguard}</b></td>
-            <td style="text-align:center"><b>${stats.conclu}</b></td>
-            <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
-          </tr>
-        `;
-      }).join("")}
-    `;
-  }
+  const total = stats.reduce((a,s)=>({ total:a.total+s.total, semVistoria:a.semVistoria+s.semVistoria, conclu:a.conclu+s.conclu, aguard:a.aguard+s.aguard, pend:a.pend+s.pend }), {total:0, semVistoria:0, conclu:0, aguard:0, pend:0});
 
   root.innerHTML = `
     <div class="card">
@@ -879,11 +881,26 @@ function renderDash(root){
       <div class="hr"></div>
 
       <div class="kpis">
-        <div class="kpi"><div class="kpi__v">${total.total}</div><div class="kpi__l">Qtd aptos</div></div>
-        <div class="kpi"><div class="kpi__v">${total.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
-        <div class="kpi"><div class="kpi__v">${total.pend}</div><div class="kpi__l">Com pendência</div></div>
-        <div class="kpi"><div class="kpi__v">${total.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
-        <div class="kpi"><div class="kpi__v">${total.conclu}</div><div class="kpi__l">Concluídos</div></div>
+        <div class="kpi">
+          <div class="kpi__v">${total.total}</div>
+          <div class="kpi__l">Qtd aptos</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.semVistoria}</div>
+          <div class="kpi__l">Sem vistoria</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.pend}</div>
+          <div class="kpi__l">Com pendência</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.aguard}</div>
+          <div class="kpi__l">Aguardando conferência</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.conclu}</div>
+          <div class="kpi__l">Concluídos</div>
+        </div>
       </div>
 
       <div class="hr"></div>
@@ -901,14 +918,26 @@ function renderDash(root){
           </tr>
         </thead>
         <tbody>
-          ${renderSection("Valparaíso", valparaiso)}
-          ${renderSection("Águas Lindas", aguaslindas)}
+          ${stats.map(s=>`
+            <tr>
+              <td><b>${esc(s.name)}</b></td>
+              <td style="text-align:center"><b>${s.total}</b></td>
+              <td style="text-align:center"><b>${s.semVistoria}</b></td>
+              <td style="text-align:center"><b>${s.pend}</b></td>
+              <td style="text-align:center"><b>${s.aguard}</b></td>
+              <td style="text-align:center"><b>${s.conclu}</b></td>
+              <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
+            </tr>
+          `).join("")}
         </tbody>
       </table>
     </div>
   `;
 
-  $$("button[data-open]").forEach(b=>{ b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") }); });
+  $$('button[data-open]').forEach(b=>{
+    b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
+  });
+
   const btnUsersDash = $("#btnUsersDash");
   if(btnUsersDash) btnUsersDash.onclick = ()=> goto("users");
 }
@@ -919,36 +948,27 @@ function renderHome(root){
   if(canViewOnly(u)) return goto("dash");
 
   const obrasVisiveis = visibleObrasForUser(u);
-  const showGrouped = u.role === "supervisor";
   const valparaiso = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="valparaiso");
   const aguaslindas = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="aguaslindas");
-
-  function renderRows(arr){
-    return arr.map(o=>{
-      const s = calcObraStats(o.id);
-      return `
-        <tr>
-          <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
-          <td style="text-align:center"><b>${s.total}</b></td>
-          <td style="text-align:center"><b>${s.semVistoria}</b></td>
-          <td style="text-align:center"><b>${s.pend}</b></td>
-          <td style="text-align:center"><b>${s.aguard}</b></td>
-          <td style="text-align:center"><b>${s.conclu}</b></td>
-          <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
-        </tr>
-      `;
-    }).join("");
-  }
 
   function renderSection(title, arr){
     if(!arr.length) return "";
     return `
-      <tr>
-        <td colspan="7" style="padding:12px 0 8px 0;border-bottom:1px solid #e5e7eb;background:transparent">
-          <span class="small" style="font-weight:700">${title}</span>
-        </td>
-      </tr>
-      ${renderRows(arr)}
+      <tr><td colspan="7" style="background:#f7f7f7"><b>${title}</b></td></tr>
+      ${arr.map(o=>{
+        const s = calcObraStats(o.id);
+        return `
+          <tr>
+            <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
+            <td style="text-align:center"><b>${s.total}</b></td>
+            <td style="text-align:center"><b>${s.semVistoria}</b></td>
+            <td style="text-align:center"><b>${s.pend}</b></td>
+            <td style="text-align:center"><b>${s.aguard}</b></td>
+            <td style="text-align:center"><b>${s.conclu}</b></td>
+            <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
+          </tr>
+        `;
+      }).join("")}
     `;
   }
 
@@ -980,7 +1000,8 @@ function renderHome(root){
             </tr>
           </thead>
           <tbody>
-            ${showGrouped ? `${renderSection("Valparaíso", valparaiso)}${renderSection("Águas Lindas", aguaslindas)}` : renderRows(obrasVisiveis)}
+            ${renderSection("Valparaíso", valparaiso)}
+            ${renderSection("Águas Lindas", aguaslindas)}
           </tbody>
         </table>
       </div>
@@ -1080,7 +1101,7 @@ function renderHome(root){
       }catch(_){ }
       $("#mAddObra", backdrop).onclick = ()=>{
         const name = ($("#mObraName", backdrop).value||"").trim();
-        const blocks = Number((($("#mBlocks", backdrop).value||"").trim()));
+        const blocks = Number(($("#mBlocks", backdrop).value||"").trim());
         const apts = Number($("#mApts", backdrop).value);
         if(!name){ toast("Informe o nome."); return; }
         if(!blocks || blocks<1 || blocks>60){ toast("Blocos inválido."); return; }
@@ -1099,7 +1120,7 @@ function renderHome(root){
     };
   }
 
-  $$("button[data-del]").forEach(btn=>{
+  $$('button[data-del]').forEach(btn=>{
     btn.onclick = ()=>{
       const u = currentUser();
       if(!canDeleteObra(u)) return toast("Sem permissão.");
@@ -1114,7 +1135,10 @@ function renderHome(root){
   });
 
   $("#btnUsers").onclick = ()=> goto("users");
-  $$("button[data-open]").forEach(b=>{ b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") }); });
+
+  $$('button[data-open]').forEach(b=>{
+    b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
+  });
 }
 
 function addObra(id, name, numBlocks, aptsPerBlock, city="valparaiso", execUser="", execPin=""){
@@ -1157,14 +1181,535 @@ function addObra(id, name, numBlocks, aptsPerBlock, city="valparaiso", execUser=
 function deleteObra(obraId){
   delete state.obras[obraId];
   state.obras_index = state.obras_index.filter(o=>o.id!==obraId);
+  // apagado é apagado: remove os logins de execução vinculados a essa obra
   state.users = state.users.filter(u => !(u.role==="execucao" && (u.obraIds||[]).includes(obraId)));
   saveState();
 }
 
-function renderUsers(root){ root.innerHTML = '<div class="card"><div class="h1">Usuários</div><div class="small">Use a versão já colada antes para esta tela.</div></div>'; }
-function renderObra(root){ root.innerHTML = '<div class="card"><div class="h1">Obra</div><div class="small">Use a versão já colada antes para esta tela.</div></div>'; }
-function renderApto(root){ root.innerHTML = '<div class="card"><div class="h1">Apartamento</div><div class="small">Use a versão já colada antes para esta tela.</div></div>'; }
-function renderSettings(root){ root.innerHTML = '<div class="card"><div class="h1">Configurações</div></div>'; }
+
+function renderUsers(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+  if(!canManageUsers(u)) { toast("Sem permissão."); return goto(canViewOnly(u) ? "dash" : "home"); }
+
+  const active = state.users.filter(x=>x.active);
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="h1">Usuários</div>
+            <div class="small">Gerencie logins (usuário + PIN)</div>
+          </div>
+          <div class="row" style="gap:8px">
+            <button id="btnBackUsers" class="btn">Voltar</button>
+            ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
+          </div>
+        </div>
+        <div class="hr"></div>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Usuário</th>
+              <th class="small">Perfil</th>
+              <th class="small">Acesso</th>
+              <th style="text-align:right">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${active.map(x=>{
+              const access = x.role==="qualidade" ? (x.id==="qualidade_aguaslindas" ? "Águas Lindas" : "Valparaíso") : ((x.obraIds||[])[0]==="*" ? "Todas" : (x.obraIds||[]).join(", "));
+              return `
+                <tr>
+                  <td><b>${esc(x.id)}</b><div class="small">${esc(x.name||"")}</div></td>
+                  <td class="small">${esc(x.role)}</td>
+                  <td class="small">${esc(access)}</td>
+                  <td style="text-align:right; white-space:nowrap">
+                    <button class="btn" data-pin="${esc(x.id)}">Alterar PIN</button>
+                    ${u.role==="supervisor" && x.role!=="diretor" ? `<button class="btn btn--red" data-off="${esc(x.id)}">Desativar</button>` : ``}
+                  </td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="h2">Regras</div>
+        <div class="small">Supervisor pode criar/desativar usuários.</div>
+        <div class="hr"></div>
+        <div class="small">
+          <b>Diretor / Engenheiro / Coordenador</b>: visualização total.<br><br>
+          <b>Supervisor</b>: visualiza tudo, aprova/reprova e gerencia usuários.<br><br>
+          <b>Qualidade</b>: cria pendências e gerencia obras/usuários de sua cidade.<br><br>
+          <b>Execução</b>: vê apenas sua obra e marca como feito.
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("#btnBackUsers").onclick = ()=> goto(canViewOnly(u) ? "dash" : "home");
+
+  const addSup = $("#btnAddSup");
+  if(addSup){
+    addSup.onclick = ()=>{
+      const { backdrop, close } = openModal(`
+        <div class="modal">
+          <div class="row">
+            <div>
+              <div class="h2">Criar Supervisor</div>
+              <div class="small">Usuário + PIN</div>
+            </div>
+            <button class="btn btn--ghost" id="mClose">✕</button>
+          </div>
+          <div class="hr"></div>
+          <div class="grid">
+            <div>
+              <div class="small">Usuário</div>
+              <input id="mUser" class="input" placeholder="Ex.: supervisor_02" />
+            </div>
+            <div>
+              <div class="small">Nome</div>
+              <input id="mName" class="input" placeholder="Ex.: Supervisor 02" />
+            </div>
+            <div>
+              <div class="small">PIN</div>
+              <input id="mPin" class="input" inputmode="numeric" maxlength="4" placeholder="Ex.: 4444" />
+            </div>
+            <div class="row" style="justify-content:flex-end">
+              <button id="mCreate" class="btn btn--orange">Criar</button>
+            </div>
+          </div>
+        </div>
+      `);
+      $("#mClose", backdrop).onclick = close;
+      $("#mCreate", backdrop).onclick = ()=>{
+        const id = ($("#mUser", backdrop).value||"").trim().toLowerCase();
+        const name = ($("#mName", backdrop).value||"").trim();
+        const pin = ($("#mPin", backdrop).value||"").trim();
+        if(!id || !name) return toast("Informe usuário e nome.");
+        if(!/^[0-9]{4}$/.test(pin)) return toast("PIN deve ter 4 dígitos.");
+        if(state.users.find(x=>x.id===id)) return toast("Usuário já existe.");
+        state.users.push({ id, name, role:"supervisor", pin, obraIds:["*"], active:true });
+        saveState();
+        close();
+        renderUsers(root);
+        toast("Supervisor criado.");
+      };
+    };
+  }
+
+  $$('button[data-pin]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-pin");
+      const user = state.users.find(x=>x.id===id);
+      if(!user) return;
+      const pin = prompt(`Novo PIN para ${user.id}:`, user.pin||"");
+      if(pin===null) return;
+      if(!/^[0-9]{4}$/.test(pin.trim())) return toast("PIN deve ter 4 dígitos.");
+      user.pin = pin.trim();
+      saveState();
+      renderUsers(root);
+      toast("PIN atualizado.");
+    };
+  });
+
+  $$('button[data-off]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-off");
+      const user = state.users.find(x=>x.id===id);
+      if(!user) return;
+      const ok = confirm(`Desativar o usuário "${user.id}"?`);
+      if(!ok) return;
+      user.active = false;
+      saveState();
+      renderUsers(root);
+      toast("Usuário desativado.");
+    };
+  });
+}
+
+function renderObra(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obraId = nav.params.obraId;
+  const obra = state.obras[obraId];
+  if(!obra){ toast("Obra não encontrada"); return goto(canViewOnly(u) ? "dash" : "home"); }
+
+  if(!canAccessObra(u, obraId)){
+    toast("Sem acesso a essa obra");
+    return goto(canViewOnly(u) ? "dash" : "home");
+  }
+
+  // execução só pode na obra vinculada
+  if(u.role==="execucao" && !(u.obraIds||[]).includes(obraId)){
+    toast("Sem acesso a essa obra.");
+    return goto("home");
+  }
+
+  const blocks = Object.values(obra.blocks||{}).sort((a,b)=>Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B","")));
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">${esc(obra.name)}</div>
+          <div class="small">${obra.config.numBlocks} blocos • ${obra.config.aptsPerBlock} apto/bloco</div>
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="grid blocks-grid">
+        ${blocks.map(block=>`
+          <button class="block-card" data-open-block="${esc(block.id)}">
+            <div class="block-card__title">${esc(block.id)}</div>
+            <div class="pills">${blockDots(obraId, block)}</div>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+
+  $$('[data-open-block]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const blockId = btn.getAttribute("data-open-block");
+      goto("apto", { obraId, blockId });
+    };
+  });
+}
+
+function renderApto(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obraId = nav.params.obraId;
+  const blockId = nav.params.blockId;
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  if(!obra || !block) return goto(canViewOnly(u) ? "dash" : "home");
+
+  const aptNums = aptNumsForBlock(obra, block);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">${esc(obra.name)} • ${esc(blockId)}</div>
+          <div class="small">Selecione o apartamento</div>
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="grid apt-grid">
+        ${aptNums.map(an=>{
+          const a = getOrMakeApartment(obraId, blockId, an);
+          const ps = a.pendencias||[];
+          let cls = "apt";
+          if(ps.length){
+            let hasPend=false, hasWait=false;
+            ps.forEach(p=>{
+              if(p.state==="pendente" || p.state==="reprovado") hasPend=true;
+              else if(p.state==="feito") hasWait=true;
+            });
+            if(hasPend) cls += " apt--pend";
+            else if(hasWait) cls += " apt--wait";
+            else cls += " apt--ok";
+          }
+          const dotCls = aptStatusClass(obraId, blockId, an);
+          return `<button class="${cls}" data-open-apt="${esc(an)}">${dotCls ? `<span class="${dotCls}" style="margin-right:6px"></span>` : ``}${esc(an)}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+
+  $$('[data-open-apt]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const apto = btn.getAttribute("data-open-apt");
+      goto("apto", { obraId, blockId, apto });
+      renderAptoDetalhe(root);
+    };
+  });
+
+  if(nav.params.apto) return renderAptoDetalhe(root);
+}
+
+function renderAptoDetalhe(root){
+  const u = currentUser();
+  const { obraId, blockId, apto } = nav.params;
+  const obra = state.obras[obraId];
+  const block = obra.blocks[blockId];
+  const apt = getOrMakeApartment(obraId, blockId, apto);
+
+  const canAdd = canCreate(u);
+  const canDone = canMarkDone(u);
+  const canRev = canReview(u);
+  const canRe = canReopen(u);
+
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="h1">${esc(obra.name)} • ${esc(blockId)} • ${esc(apto)}</div>
+            <div class="small">Pendências do apartamento</div>
+          </div>
+          <div class="row" style="gap:8px">
+            ${canAdd ? `<button id="btnAddPend" class="btn btn--orange">+ Pendência</button>` : ``}
+          </div>
+        </div>
+        <div class="hr"></div>
+
+        <div class="grid">
+          ${(apt.pendencias||[]).map(p=>`
+            <div class="card">
+              <div class="row">
+                <div>
+                  <div><b>${esc(p.title||"-")}</b></div>
+                  <div class="small">${esc(p.category||"-")} • ${esc(p.location||"-")}</div>
+                </div>
+                <div class="badge">${esc(p.state||"-")}</div>
+              </div>
+
+              ${p.rejection ? `<div class="small" style="margin-top:8px"><b>Motivo:</b> ${esc(p.rejection)}</div>` : ``}
+              <div class="hr"></div>
+
+              <div class="row" style="gap:8px; flex-wrap:wrap">
+                ${canDone && (p.state==="pendente" || p.state==="reprovado") ? `<button class="btn" data-done="${esc(p.id)}">Marcar feito</button>` : ``}
+                ${canRev && p.state==="feito" ? `<button class="btn btn--orange" data-aprov="${esc(p.id)}">Conferir</button>` : ``}
+                ${canRev && p.state==="feito" ? `<button class="btn btn--red" data-reprov="${esc(p.id)}">Reprovar</button>` : ``}
+                ${canRe && p.state==="conferido" ? `<button class="btn" data-reopen="${esc(p.id)}">Reabrir</button>` : ``}
+                ${canAdd ? `<button class="btn" data-edit="${esc(p.id)}">Editar</button>` : ``}
+                ${canAdd ? `<button class="btn btn--red" data-del="${esc(p.id)}">Apagar</button>` : ``}
+              </div>
+
+              <div class="hr"></div>
+              <div class="small">${(ensureEvents(p)||[]).map(ev=>fmtEvent(ev)).join("<br>")}</div>
+            </div>
+          `).join("") || `<div class="small">Sem pendências.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+
+  const btnAdd = $("#btnAddPend");
+  if(btnAdd){
+    btnAdd.onclick = ()=>{
+      const { backdrop, close } = openModal(`
+        <div class="modal">
+          <div class="row">
+            <div>
+              <div class="h2">Nova pendência</div>
+              <div class="small">${esc(obra.name)} • ${esc(blockId)} • ${esc(apto)}</div>
+            </div>
+            <button class="btn btn--ghost" id="mClose">✕</button>
+          </div>
+          <div class="hr"></div>
+          <div class="grid">
+            <div>
+              <div class="small">Descrição</div>
+              <input id="mTitle" class="input" placeholder="Ex.: Pintura com falha" />
+            </div>
+            <div>
+              <div class="small">Categoria</div>
+              <input id="mCat" class="input" placeholder="Ex.: Pintura" />
+            </div>
+            <div>
+              <div class="small">Local</div>
+              <input id="mLoc" class="input" placeholder="Ex.: Sala" />
+            </div>
+            <div class="row" style="justify-content:flex-end">
+              <button id="mCreate" class="btn btn--orange">Adicionar</button>
+            </div>
+          </div>
+        </div>
+      `);
+      $("#mClose", backdrop).onclick = close;
+      $("#mCreate", backdrop).onclick = ()=>{
+        const title = ($("#mTitle", backdrop).value||"").trim();
+        const category = ($("#mCat", backdrop).value||"").trim();
+        const location = ($("#mLoc", backdrop).value||"").trim();
+        if(!title) return toast("Informe a descrição.");
+
+        const p = {
+          id: uid("p"),
+          title, category, location,
+          state: "pendente",
+          createdAt: new Date().toISOString(),
+          createdBy: currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null,
+          doneAt:null, doneBy:null,
+          reviewedAt:null, reviewedBy:null,
+          rejection:null,
+          reopenedAt:null,
+          photos: [],
+          events:[]
+        };
+        pushEvent(p, "criado", currentUser());
+        apt.pendencias.push(p);
+        saveState();
+        close();
+        renderAptoDetalhe(root);
+        toast("Pendência adicionada.");
+      };
+    };
+  }
+
+  $$('[data-done]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-done");
+      const p = (apt.pendencias||[]).find(x=>x.id===id);
+      if(!p) return;
+      p.state = "feito";
+      p.doneAt = new Date().toISOString();
+      p.doneBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
+      pushEvent(p, "feito", currentUser());
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Marcado como feito.");
+    };
+  });
+
+  $$('[data-aprov]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-aprov");
+      const p = (apt.pendencias||[]).find(x=>x.id===id);
+      if(!p) return;
+      p.state = "conferido";
+      p.reviewedAt = new Date().toISOString();
+      p.reviewedBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
+      pushEvent(p, "aprovado", currentUser());
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Conferido.");
+    };
+  });
+
+  $$('[data-reprov]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-reprov");
+      const p = (apt.pendencias||[]).find(x=>x.id===id);
+      if(!p) return;
+      const note = prompt("Motivo da reprovação:", p.rejection||"");
+      if(note===null) return;
+      p.state = "reprovado";
+      p.rejection = (note||"").trim();
+      p.reviewedAt = new Date().toISOString();
+      p.reviewedBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
+      pushEvent(p, "reprovado", currentUser(), { note:p.rejection });
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Pendência reprovada.");
+    };
+  });
+
+  $$('[data-reopen]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-reopen");
+      const p = (apt.pendencias||[]).find(x=>x.id===id);
+      if(!p) return;
+      p.state = "pendente";
+      p.reopenedAt = new Date().toISOString();
+      pushEvent(p, "reaberto", currentUser());
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Pendência reaberta.");
+    };
+  });
+
+  $$('[data-edit]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-edit");
+      const p = (apt.pendencias||[]).find(x=>x.id===id);
+      if(!p) return;
+      const title = prompt("Editar descrição:", p.title||"");
+      if(title===null) return;
+      p.title = title.trim();
+      pushEvent(p, "editado", currentUser());
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Pendência editada.");
+    };
+  });
+
+  $$('[data-del]').forEach(btn=>{
+    btn.onclick = ()=>{
+      const id = btn.getAttribute("data-del");
+      const idx = (apt.pendencias||[]).findIndex(x=>x.id===id);
+      if(idx<0) return;
+      const p = apt.pendencias[idx];
+      pushEvent(p, "apagado", currentUser());
+      apt.pendencias.splice(idx,1);
+      saveState();
+      renderAptoDetalhe(root);
+      toast("Pendência apagada.");
+    };
+  });
+}
+
+function renderSettings(root){
+  const u = currentUser();
+  if(!canResetData(u)) return goto("home");
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="h1">Configurações</div>
+      <div class="small">Área restrita ao supervisor.</div>
+      <div class="hr"></div>
+
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <button id="btnExport" class="btn">Exportar JSON</button>
+        <button id="btnImport" class="btn">Importar JSON</button>
+        <button id="btnReset" class="btn btn--red">Resetar dados</button>
+      </div>
+
+      <input id="importFile" type="file" accept=".json,application/json" style="display:none" />
+    </div>
+  `;
+
+  $("#btnExport").onclick = ()=>{
+    const blob = new Blob([JSON.stringify(persistableState(), null, 2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `bela_mares_checklist_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  $("#btnImport").onclick = ()=> $("#importFile").click();
+
+  $("#importFile").onchange = async (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    try{
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      if(!parsed || parsed.version !== STATE_VERSION) return toast("Arquivo inválido.");
+      if(parsed.session) delete parsed.session;
+      state = parsed;
+      ensureSystemDefaults();
+      saveState();
+      toast("Dados importados.");
+      goto("home");
+    }catch(err){
+      toast("Falha ao importar.");
+    }finally{
+      e.target.value = "";
+    }
+  };
+
+  $("#btnReset").onclick = ()=>{
+    const ok = confirm("Resetar todos os dados locais do app?");
+    if(!ok) return;
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(SESSION_KEY);
+    state = seed();
+    ensureSystemDefaults();
+    saveState();
+    goto("login");
+  };
+}
 
 ensureSystemDefaults();
 initFirestore();
