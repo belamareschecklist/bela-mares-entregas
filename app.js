@@ -706,6 +706,19 @@ function setTopbar(){
 function sortAptNums(nums){
   return [...nums].sort((a,b)=>Number(a)-Number(b));
 }
+function aptStatusClass(obraId, blockId, an){
+  const a = getApartmentView(obraId, blockId, an);
+  const ps = a.pendencias||[];
+  if(!ps.length) return "";
+  let hasPend=false, hasWait=false;
+  ps.forEach(p=>{
+    if(p.state==="pendente" || p.state==="reprovado") hasPend=true;
+    else if(p.state==="feito") hasWait=true;
+  });
+  if(hasPend) return "dot dot--r";
+  if(hasWait) return "dot dot--o";
+  return "dot dot--g";
+}
 
 function blockDots(obraId, block){
   const obra = state.obras[obraId];
@@ -934,6 +947,31 @@ function renderHome(root){
   if(!u) return goto("login");
   if(canViewOnly(u)) return goto("dash");
 
+  const obrasVisiveis = visibleObrasForUser(u);
+  const valparaiso = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="valparaiso");
+  const aguaslindas = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="aguaslindas");
+
+  function renderSection(title, arr){
+    if(!arr.length) return "";
+    return `
+      <tr><td colspan="7" style="background:#f7f7f7"><b>${title}</b></td></tr>
+      ${arr.map(o=>{
+        const s = calcObraStats(o.id);
+        return `
+          <tr>
+            <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
+            <td style="text-align:center"><b>${s.total}</b></td>
+            <td style="text-align:center"><b>${s.semVistoria}</b></td>
+            <td style="text-align:center"><b>${s.pend}</b></td>
+            <td style="text-align:center"><b>${s.aguard}</b></td>
+            <td style="text-align:center"><b>${s.conclu}</b></td>
+            <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
+          </tr>
+        `;
+      }).join("")}
+    `;
+  }
+
   root.innerHTML = `
     <div class="grid2">
       <div class="card">
@@ -946,7 +984,6 @@ function renderHome(root){
             <button id="btnDash" class="btn">Visão Geral</button>
             ${canManageObras(u) ? `<button id="btnAddObra" class="btn btn--orange">+ Adicionar obra</button>` : ``}
             <button id="btnUsers" class="btn">Usuários</button>
-            
           </div>
         </div>
         <div class="hr"></div>
@@ -963,20 +1000,8 @@ function renderHome(root){
             </tr>
           </thead>
           <tbody>
-            ${visibleObrasForUser(u).map(o=>{
-              const s = calcObraStats(o.id);
-              return `
-                <tr>
-                  <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
-                  <td style="text-align:center"><b>${s.total}</b></td>
-                  <td style="text-align:center"><b>${s.semVistoria}</b></td>
-                  <td style="text-align:center"><b>${s.pend}</b></td>
-                  <td style="text-align:center"><b>${s.aguard}</b></td>
-                  <td style="text-align:center"><b>${s.conclu}</b></td>
-                  <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
-                </tr>
-              `;
-            }).join("")}
+            ${renderSection("Valparaíso", valparaiso)}
+            ${renderSection("Águas Lindas", aguaslindas)}
           </tbody>
         </table>
       </div>
@@ -1038,8 +1063,7 @@ function renderHome(root){
                 </div>
               </div>
             </div>
-            <div>
-            </div>
+            <div></div>
             <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
               <div>
                 <div class="small">Cidade</div>
@@ -1131,12 +1155,10 @@ function addObra(id, name, numBlocks, aptsPerBlock, city="valparaiso", execUser=
     if(!/^[0-9]{4}$/.test(String(execPin||""))) return { ok:false, msg:"PIN da Execução deve ter 4 dígitos." };
     const already = state.users.find(u=>u.role==="execucao" && (u.obraIds||[])[0]===id && u.active);
     if(already) return { ok:false, msg:"Já existe Execução para essa obra." };
-    const exists = state.users.find(u=>u.id===execUser);
+    const exists = state.users.find(u=>u.id===execUser && u.active);
     if(exists) return { ok:false, msg:"Usuário de Execução já existe." };
   }
 
-  // CRIAÇÃO LEVE: não pré-cria todos os apartamentos (evita estourar LocalStorage e mantém o app rápido).
-  // Os apartamentos são materializados quando você abre o apto ou quando chegam dados do Firestore.
   const blocks = {};
   for(let b=1;b<=nb;b++){
     const bid = "B"+b;
@@ -1159,13 +1181,8 @@ function addObra(id, name, numBlocks, aptsPerBlock, city="valparaiso", execUser=
 function deleteObra(obraId){
   delete state.obras[obraId];
   state.obras_index = state.obras_index.filter(o=>o.id!==obraId);
-  // remove usuários de execução vinculados exclusivamente a essa obra (opcional: manter)
-  state.users = state.users.map(u=>{
-    if(u.role==="execucao" && (u.obraIds||[]).includes(obraId)){
-      return { ...u, active:false };
-    }
-    return u;
-  });
+  // apagado é apagado: remove os logins de execução vinculados a essa obra
+  state.users = state.users.filter(u => !(u.role==="execucao" && (u.obraIds||[]).includes(obraId)));
   saveState();
 }
 
@@ -1401,7 +1418,8 @@ function renderApto(root){
             else if(hasWait) cls += " apt--wait";
             else cls += " apt--ok";
           }
-          return `<button class="${cls}" data-open-apt="${esc(an)}">${esc(an)}</button>`;
+          const dotCls = aptStatusClass(obraId, blockId, an);
+          return `<button class="${cls}" data-open-apt="${esc(an)}">${dotCls ? `<span class="${dotCls}" style="margin-right:6px"></span>` : ``}${esc(an)}</button>`;
         }).join("")}
       </div>
     </div>
