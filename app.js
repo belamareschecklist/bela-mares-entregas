@@ -152,10 +152,10 @@ function seed(){
     session: null, // { userId }
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
-      { id:"qualidade_01", name:"Qualidade 01", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
+      { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
+      { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:[], active:true },
       { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
       { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
-      { id:"exec_athenas", name:"Execução Athenas", role:"execucao", pin:"1234", obraIds:["athenas"], active:true },
       { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
       { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
       { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true },
@@ -170,41 +170,39 @@ function seed(){
     for(let b=1;b<=numBlocks;b++){
       const bid = "B"+b;
       const apartments = {};
-      const nums = (aptsPerBlock===12) ? APT_NUMS_12 : (aptsPerBlock===16 ? APT_NUMS_16 : APT_NUMS_12); // (se você quiser 16 depois, a gente coloca)
+      const nums = (aptsPerBlock===12) ? APT_NUMS_12 : (aptsPerBlock===16 ? APT_NUMS_16 : APT_NUMS_12);
       nums.forEach(n=>{
         apartments[n] = { num:n, pendencias: [], photos: [] };
       });
       blocks[bid] = { id:bid, apartments };
     }
-    const obra = { id, name, config:{ numBlocks, aptsPerBlock }, blocks };
+    const obra = { id, name, city: "valparaiso", config:{ numBlocks, aptsPerBlock }, blocks };
     state.obras[id] = obra;
-    state.obras_index.push({ id, name, config: obra.config });
+    state.obras_index.push({ id, name, city: obra.city, config: obra.config });
   }
 
   makeObra("costa_rica", "Costa Rica - Entregas", 17, 12);
   makeObra("costa_brava", "Costa Brava - Entregas", 6, 12);
 
-  // demo
   state.obras.costa_rica.blocks.B17.apartments["204"].pendencias.push({
     id: uid("p"),
     title: "Rejunte falhando",
     category: "Revestimento",
     location: "Cozinha",
-    state: "pendente", // pendente|feito|conferido|reprovado
+    state: "pendente",
     createdAt: new Date().toISOString(),
-    createdBy: { id:"qualidade_01", name:"Qualidade 01", role:"qualidade" },
+    createdBy: { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade" },
     doneAt:null, doneBy:null,
     reviewedAt:null, reviewedBy:null,
     rejection:null,
     reopenedAt:null,
-      photos: []
-    });
+    photos: []
+  });
 
   return state;
 }
 
 function loadState(){
-  // 1) localStorage (fast)  2) Firestore (if configured) will overwrite via listener
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
@@ -220,7 +218,6 @@ function loadState(){
 }
 let state = loadState();
 
-// ---- Firestore (live sync) ----
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
   authDomain: "bela-mares-entregas.firebaseapp.com",
@@ -230,10 +227,6 @@ const FIREBASE_CONFIG = {
   appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
 };
 
-
-// --- Live sync sem estourar 1MiB ---
-// Mantém o legado em apps/bela_mares_checklist/state/main (somente leitura).
-// Novas alterações por apartamento vão para: apps/bela_mares_checklist/apartments/{obraId}__{blockId}__{apto}
 const APARTMENTS_COLLECTION = "apartments";
 let fbApartmentsUnsub = null;
 
@@ -243,7 +236,7 @@ function makeAptDocId(obraId, blockId, apto){
 
 function ensureAptPath(obraId, blockId, apto){
   if(!state.obras) state.obras = {};
-  if(!state.obras[obraId]) state.obras[obraId] = { id:obraId, name:obraId, blocks:{} };
+  if(!state.obras[obraId]) state.obras[obraId] = { id:obraId, name:obraId, city:"valparaiso", blocks:{} };
   if(!state.obras[obraId].blocks) state.obras[obraId].blocks = {};
   if(!state.obras[obraId].blocks[blockId]) state.obras[obraId].blocks[blockId] = { id:blockId, name:blockId, apartments:{} };
   if(!state.obras[obraId].blocks[blockId].apartments) state.obras[obraId].blocks[blockId].apartments = {};
@@ -259,10 +252,8 @@ function applyApartmentFromDoc(doc){
     const apto = String(doc.apto);
     if(!obraId || !blockId || !apto) return;
     const target = ensureAptPath(obraId, blockId, apto);
-    // substitui somente os campos do apartamento (não mexe no resto do state)
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : (target.pendencias||[]);
     target.photos = Array.isArray(doc.photos) ? doc.photos : (target.photos||[]);
-    // marca timestamp local
     if(!target._meta) target._meta = {};
     if(typeof doc.updatedAtMs === "number") target._meta.updatedAtMs = doc.updatedAtMs;
   }catch(e){
@@ -270,7 +261,12 @@ function applyApartmentFromDoc(doc){
   }
 }
 
-// Salva um estado "meta" pequeno (sem apartments) para evitar LocalStorage/quota e não tentar sobrescrever o legado gigante.
+function persistableState(){
+  const copy = JSON.parse(JSON.stringify(state));
+  if(copy && copy.session) delete copy.session;
+  return copy;
+}
+
 function persistableMetaState(){
   const copy = JSON.parse(JSON.stringify(persistableState()));
   if(copy && copy.obras){
@@ -294,7 +290,74 @@ let fbMetaUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
-let lastAction = null; // 'createObra'
+let lastAction = null;
+
+function normalizeCity(v){
+  const s = String(v||"").trim().toLowerCase();
+  if(s.includes("aguas")) return "aguaslindas";
+  return "valparaiso";
+}
+
+function ensureSystemDefaults(){
+  state.users = (state.users||[]).filter(u => !(u && u.id==="exec_athenas" && u.role==="execucao"));
+
+  const qOld = (state.users||[]).find(u=>u && u.id==="qualidade_01");
+  const qVal = (state.users||[]).find(u=>u && u.id==="qualidade_valparaiso");
+  if(qOld && !qVal){
+    qOld.id = "qualidade_valparaiso";
+    qOld.name = "Qualidade Valparaíso";
+  }else if(qOld && qVal){
+    state.users = state.users.filter(u=>u.id!=="qualidade_01");
+  }
+  if(!(state.users||[]).find(u=>u && u.id==="qualidade_valparaiso")){
+    state.users.push({ id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true });
+  }
+  if(!(state.users||[]).find(u=>u && u.id==="qualidade_aguaslindas")){
+    state.users.push({ id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:[], active:true });
+  }
+
+  const legacyVal = new Set(["park_rubi","costa_brava","costa_rica","athenas"]);
+  state.obras = state.obras || {};
+  state.obras_index = state.obras_index || [];
+  for(const oid of Object.keys(state.obras)){
+    if(!state.obras[oid].city){
+      state.obras[oid].city = legacyVal.has(oid) ? "valparaiso" : "valparaiso";
+    }else{
+      state.obras[oid].city = normalizeCity(state.obras[oid].city);
+    }
+  }
+  state.obras_index = state.obras_index.map(o=>{
+    const city = normalizeCity((state.obras[o.id] && state.obras[o.id].city) || o.city || (legacyVal.has(o.id) ? "valparaiso" : "valparaiso"));
+    return { ...o, city };
+  });
+}
+
+function userCities(u){
+  if(!u) return [];
+  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return ["*"];
+  if(u.role==="execucao") return [];
+  if(u.id==="qualidade_aguaslindas") return ["aguaslindas"];
+  if(u.id==="qualidade_valparaiso" || u.id==="qualidade_01") return ["valparaiso"];
+  return ["valparaiso"];
+}
+
+function canAccessObra(u, obraId){
+  if(!u) return false;
+  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return true;
+  if(u.role==="execucao") return (u.obraIds||[]).includes(obraId) || (u.obraIds||[]).includes("*");
+  if(u.role==="qualidade"){
+    const obra = state.obras?.[obraId];
+    const city = normalizeCity(obra?.city || state.obras_index.find(x=>x.id===obraId)?.city || "valparaiso");
+    const cities = userCities(u);
+    return cities.includes("*") || cities.includes(city);
+  }
+  return false;
+}
+
+function visibleObrasForUser(u){
+  const list = Array.isArray(state.obras_index) ? state.obras_index : [];
+  return list.filter(o => canAccessObra(u, o.id));
+}
 
 function initFirestore(){
   try{
@@ -305,11 +368,8 @@ function initFirestore(){
 
     const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main");
 
-    // subscribe
     if(fbUnsub) try{ fbUnsub(); }catch(_){}
-    
 
-    // subscribe META (obras/config/usuários) em doc separado (state/meta) para não estourar 1MB do state/main
     const metaRefDoc = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
     if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
     fbMetaUnsub = metaRefDoc.onSnapshot((snap)=>{
@@ -321,19 +381,17 @@ function initFirestore(){
 
       try{
         const parsed = JSON.parse(data.meta);
-        // Aplica SOMENTE meta (não toca em apartments/pendências antigas)
         if(parsed && typeof parsed === "object"){
           if(parsed.users) state.users = parsed.users;
           if(parsed.obras_index) state.obras_index = parsed.obras_index;
           if(parsed.obras){
-            // não sobrescreve apartments existentes
             for(const oid of Object.keys(parsed.obras||{})){
               const incoming = parsed.obras[oid];
               if(!state.obras[oid]) state.obras[oid] = incoming;
               else{
-                // merge raso
                 state.obras[oid].id = incoming.id || state.obras[oid].id;
                 state.obras[oid].name = incoming.name || state.obras[oid].name;
+                state.obras[oid].city = incoming.city || state.obras[oid].city || "valparaiso";
                 state.obras[oid].config = incoming.config || state.obras[oid].config;
                 if(incoming.blocks){
                   state.obras[oid].blocks = state.obras[oid].blocks || {};
@@ -341,7 +399,6 @@ function initFirestore(){
                     const inBlk = incoming.blocks[bid];
                     const curBlk = state.obras[oid].blocks[bid] || { id: bid, apartments: {} };
                     curBlk.id = inBlk.id || curBlk.id;
-                    // mantém apartments locais
                     state.obras[oid].blocks[bid] = curBlk;
                   }
                 }
@@ -349,58 +406,56 @@ function initFirestore(){
             }
           }
         }
+        ensureSystemDefaults();
         try{ render(); }catch(_){}
       }catch(e){
         console.warn("Meta inválido no Firestore:", e);
       }
     });
 
-fbUnsub = ref.onSnapshot((snap)=>{
-  if(!snap || !snap.exists) return;
+    fbUnsub = ref.onSnapshot((snap)=>{
+      if(!snap || !snap.exists) return;
+      if(snap.metadata && snap.metadata.hasPendingWrites) return;
 
-  // Ignora eco local (escrita pendente). A gente só aplica quando veio do servidor.
-  if(snap.metadata && snap.metadata.hasPendingWrites) return;
+      const data = snap.data() || {};
+      const remoteState = data.state;
+      if(!remoteState) return;
 
-  const data = snap.data() || {};
-  const remoteState = data.state;
-  if(!remoteState) return;
+      const ts =
+        (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
+        (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
+        null;
 
-  // Usa updatedAtMs gravado no documento (estável entre cache/servidor).
-  const ts =
-    (typeof data.updatedAtMs === "number" && isFinite(data.updatedAtMs)) ? data.updatedAtMs :
-    (snap.updateTime && typeof snap.updateTime.toMillis === "function") ? snap.updateTime.toMillis() :
-    null;
+      if(!ts) return;
+      if(ts <= lastRemoteTs) return;
+      lastRemoteTs = ts;
 
-  if(!ts) return;
-  if(ts <= lastRemoteTs) return;
-  lastRemoteTs = ts;
+      try{
+        const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
+        if(!parsed || parsed.version !== STATE_VERSION) return;
 
-  try{
-    const parsed = (typeof remoteState === "string") ? JSON.parse(remoteState) : remoteState;
-    if(!parsed || parsed.version !== STATE_VERSION) return;
+        isApplyingRemote = true;
 
-    isApplyingRemote = true;
+        const currentSession = (state && state.session) ? state.session : null;
+        if(parsed.session) delete parsed.session;
 
-    // Não sobrescreve sessão local (cada aparelho pode estar logado com usuário diferente)
-    const currentSession = (state && state.session) ? state.session : null;
-    if(parsed.session) delete parsed.session;
+        state = parsed;
+        if(currentSession) state.session = currentSession;
 
-    state = parsed;
-    if(currentSession) state.session = currentSession;
+        ensureSystemDefaults();
+        if(!state._meta) state._meta = {};
+        state._meta.updatedAt = ts;
 
-    if(!state._meta) state._meta = {};
-    state._meta.updatedAt = ts;
+        safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
 
-    safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+        try{ render(); }catch(_){}
+      }catch(e){
+        console.warn("Erro ao aplicar estado remoto:", e);
+      }finally{
+        isApplyingRemote = false;
+      }
+    });
 
-    try{ render(); }catch(_){}
-  }catch(e){
-    console.warn("Erro ao aplicar estado remoto:", e);
-  }finally{
-    isApplyingRemote = false;
-  }
-
-    // subscribe apartments (somente docs migrados/alterados). Mantém contagens e tela "ao vivo" sem estourar 1MiB.
     try{
       const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
       if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
@@ -408,33 +463,29 @@ fbUnsub = ref.onSnapshot((snap)=>{
         if(!qs) return;
         if(qs.metadata && qs.metadata.hasPendingWrites) return;
         qs.docChanges().forEach((ch)=>{
-          const d = ch.doc && ch.doc.exists ? (ch.doc.data()||{}) : null;
-          applyApartmentFromDoc(d);
+          const data = ch.doc.data() || {};
+          applyApartmentFromDoc(data);
         });
         try{ render(); }catch(_){}
       });
     }catch(e){
-      console.warn("Falha ao assinar apartments:", e);
+      console.warn("Falha no listener de apartments:", e);
     }
 
-});
   }catch(e){
-    fbReady = false;
+    console.warn("Firestore indisponível:", e);
   }
 }
-
-initFirestore();
 
 function queueSaveToFirestore(pstate){
   if(!fbReady) return;
   if(saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     const now = Date.now();
-    // don't upload while applying remote snapshot
     if(isApplyingRemote) return;
 
     try{
-      // 1) Salva apenas META (pequeno) no state/main — não toca no campo 'state' gigante.
+      ensureSystemDefaults();
       const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
       const metaPayload = {
         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
@@ -448,7 +499,6 @@ function queueSaveToFirestore(pstate){
       try{ if(lastAction==='createObra') toast('ERRO ao criar obra. Abra F12 > Console.'); }catch(_){}
     }
 
-    // 2) Se estiver em um apartamento, salva somente aquele apartamento em um doc separado (ao vivo).
     try{
       if(nav && nav.screen==="apto" && nav.params && nav.params.obraId && nav.params.blockId && nav.params.apto){
         const obraId = nav.params.obraId;
@@ -470,8 +520,6 @@ function queueSaveToFirestore(pstate){
         };
 
         await aRef.set(aptPayload, {merge:true});
-
-        // aplica local (evita "piscar" em alguns casos)
         applyApartmentFromDoc(aptPayload);
       }
     }catch(e){
@@ -479,24 +527,15 @@ function queueSaveToFirestore(pstate){
       try{ toast("ERRO ao sincronizar (apto). Abra F12 > Console."); }catch(_){}
     }
 
-    // keep local meta in sync (ms is fine for comparison)
     if(!state._meta) state._meta = {};
     state._meta.updatedAt = now;
     safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
   }, 400);
 }
 
-function persistableState(){
-  // Never persist session globally; session is per-device (SESSION_KEY)
-  const copy = JSON.parse(JSON.stringify(state));
-  if(copy && copy.session) delete copy.session;
-  return copy;
-}
-
 function saveState(){
   const pstate = persistableState();
   safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
-  // live sync (if enabled)
   try{ queueSaveToFirestore(pstate); }catch(_){ }
 }
 
@@ -552,15 +591,12 @@ function canMarkDone(u){
 function canReview(u){
   return u.role==="supervisor";
 }
-
 function canManageObras(u){
   return ["qualidade","supervisor"].includes(u.role);
 }
-
 function canManageUsers(u){
   return ["qualidade","supervisor"].includes(u.role);
 }
-
 function canResetData(u){
   return u && u.role==="supervisor";
 }
@@ -570,7 +606,6 @@ function canCreateSupervisor(u){
 function canDeleteObra(u){
   return u.role==="supervisor";
 }
-
 function canReopen(u){
   return ["qualidade","supervisor"].includes(u.role);
 }
@@ -592,90 +627,31 @@ function setTopbar(){
 
   if(u){
     chip.style.display = "inline-flex";
-    settingsBtn.style.display = "inline-flex";
     chip.textContent = `${u.name} • ${u.role}`;
     logout.style.display = "inline-flex";
+    settingsBtn.style.display = u.role==="supervisor" ? "inline-flex" : "none";
+    back.style.display = nav.screen==="login" ? "none" : "inline-flex";
   }else{
-    settingsBtn.style.display = "none";
     chip.style.display = "none";
+    settingsBtn.style.display = "none";
     logout.style.display = "none";
+    back.style.display = "none";
   }
-  // back button
-  const showBack = ["dash","home","obra","apto"].includes(nav.screen) && nav.screen !== "login";
-  back.style.display = showBack ? "inline-flex" : "none";
+
   back.onclick = ()=>{
-    if(nav.screen==="apto"){
-      goto("obra", { obraId: nav.params.obraId, blockId: nav.params.blockId });
-    }else if(nav.screen==="obra"){
-      const u2 = currentUser();
-      if(u2 && canViewOnly(u2)) goto("dash");
-      else goto("home");
-    }else if(nav.screen==="home" || nav.screen==="dash"){
-      // no-op
-      toast("Você já está na tela inicial.");
-    }
+    const u = currentUser();
+    if(!u) return goto("login");
+    if(nav.screen==="apto") return goto("obra", { obraId: nav.params.obraId });
+    if(nav.screen==="obra") return goto(canViewOnly(u) ? "dash" : "home");
+    if(nav.screen==="users") return goto(canViewOnly(u) ? "dash" : "home");
+    if(nav.screen==="settings") return goto(canViewOnly(u) ? "dash" : "home");
+    if(nav.screen==="dash") return goto("home");
   };
-
-  settingsBtn.onclick = ()=>{ goto("settings"); };
-
   logout.onclick = ()=>{
     setSessionUserId("");
+    state.session = null;
     goto("login");
   };
-}
-
-function calcObraStats(obraId){
-  const obra = state.obras[obraId];
-  let total=0, conclu=0, aguard=0, pend=0;
-  Object.values(obra.blocks).forEach(b=>{
-    Object.values(b.apartments).forEach(a=>{
-      total++;
-      const ps = a.pendencias || [];
-      const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
-      const hasPend = ps.some(p=>p.state==="pendente" || p.state==="reprovado");
-      const hasAguard = ps.some(p=>p.state==="feito");
-      if(allDone) conclu++;
-      else if(hasPend) pend++;
-      else if(hasAguard) aguard++;
-    });
-  });
-  return { total, conclu, aguard, pend };
-}
-
-function aptStatus(apto){
-  const ps = apto.pendencias || [];
-  const allDone = ps.length>0 && ps.every(p=>p.state==="conferido");
-  const hasPend = ps.some(p=>p.state==="pendente" || p.state==="reprovado");
-  const hasAguard = ps.some(p=>p.state==="feito");
-  if(allDone) return { label:"Liberado", dot:"g" };
-  if(hasPend) return { label:"Com pendência", dot:"r" };
-  if(hasAguard) return { label:"Aguardando conferência", dot:"o" };
-  return { label:"Sem pendências", dot:"" };
-}
-
-function blockDots(block){
-  const apts = Object.values(block?.apartments||{});
-  if(apts.length===0) return "";
-  const cats = apts.map(a=>{
-    const st = aptStatus(a);
-    if(st.dot==="g") return "g";
-    if(st.dot==="o") return "o";
-    if(st.dot==="r") return "r";
-    return ""; // sem registros/sem pendências
-  });
-
-  const nonEmpty = cats.filter(x=>x);
-  if(nonEmpty.length===0) return "";
-
-  const allSame = nonEmpty.every(x=>x===nonEmpty[0]) && nonEmpty.length===cats.length;
-  if(allSame){
-    const d = nonEmpty[0];
-    return `<span class="dot dot--${d}" style="margin-left:8px"></span>`;
-  }
-
-  const set = new Set(nonEmpty);
-  const order = ["r","o","g"]; // pendente, aguardando, concluído
-  return order.filter(x=>set.has(x)).map(d=>`<span class="dot dot--${d}" style="margin-left:6px"></span>`).join("");
 }
 
 function render(){
@@ -683,7 +659,6 @@ function render(){
   const root = $("#app");
   const u = currentUser();
 
-  // first gate
   if(!u && nav.screen!=="login"){
     nav.screen="login";
     nav.params={};
@@ -697,7 +672,6 @@ function render(){
   if(nav.screen==="users") return renderUsers(root);
   if(nav.screen==="settings") return renderSettings(root);
 
-  // fallback
   nav.screen = "login";
   nav.params = {};
   return renderLogin(root);
@@ -713,37 +687,124 @@ function renderLogin(root){
         <div class="grid">
           <div>
             <div class="small">Usuário</div>
-            <input id="loginUser" class="input" placeholder="ex.: qualidade_01" autocomplete="username" />
+            <input id="loginUser" class="input" placeholder="Ex.: supervisor_01" />
           </div>
           <div>
             <div class="small">PIN</div>
-            <input id="loginPin" class="input" placeholder="ex.: 2222" inputmode="numeric" autocomplete="current-password" />
+            <input id="loginPin" class="input" inputmode="numeric" maxlength="4" placeholder="4 dígitos" />
           </div>
-          <div class="row">
+          <div class="row" style="justify-content:flex-end">
             <button id="btnLogin" class="btn btn--orange">Entrar</button>
-            
           </div>
-</div>
+        </div>
       </div>
-
       <div class="card">
-        <div class="h2">Obras cadastradas</div>
-        <div class="small">Costa Rica e Costa Brava já vêm prontas.</div>
+        <div class="h2">Acesso</div>
+        <div class="small">Perfis cadastrados no protótipo.</div>
+        <div class="hr"></div>
+        <div class="small">
+          <b>Supervisor</b>: vê e edita todas as obras.<br><br>
+          <b>Qualidade Valparaíso</b>: vê e edita apenas obras de Valparaíso.<br><br>
+          <b>Qualidade Águas Lindas</b>: vê e edita apenas obras de Águas Lindas.<br><br>
+          <b>Execução</b>: vê apenas a sua obra vinculada.<br><br>
+          <b>Diretor / Engenheiro / Coordenador</b>: visualizam todas.
+        </div>
+      </div>
+    </div>
+  `;
+
+  $("#btnLogin").onclick = ()=>{
+    const user = ($("#loginUser").value||"").trim().toLowerCase();
+    const pin = ($("#loginPin").value||"").trim();
+    const found = state.users.find(u=>u.id===user && u.pin===pin && u.active);
+    if(!found) return toast("Usuário ou PIN inválido.");
+    setSessionUserId(found.id);
+    state.session = { userId: found.id };
+    if(canViewOnly(found)) goto("dash");
+    else goto("home");
+  };
+}function renderDash(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obras = visibleObrasForUser(u);
+
+  const stats = obras.map(o=>{
+    let concl=0, aguard=0, pend=0;
+    const ob = state.obras[o.id];
+    if(!ob) return { name:o.name, concl:0, aguard:0, pend:0 };
+
+    for(const bid in ob.blocks){
+      const blk = ob.blocks[bid];
+      const nums = aptNumsForBlock(ob, blk);
+      nums.forEach(n=>{
+        const a = getApartmentView(o.id, bid, n);
+        (a.pendencias||[]).forEach(p=>{
+          if(p.state==="concluido") concl++;
+          else if(p.state==="aguardando") aguard++;
+          else pend++;
+        });
+      });
+    }
+    return { name:o.name, concl, aguard, pend };
+  });
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="h1">Visão Geral</div>
+      <div class="hr"></div>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Obra</th>
+            <th>Concluídos</th>
+            <th>Aguardando</th>
+            <th>Pendência</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${stats.map(s=>`
+            <tr>
+              <td>${esc(s.name)}</td>
+              <td>${s.concl}</td>
+              <td>${s.aguard}</td>
+              <td>${s.pend}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderHome(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+  if(canViewOnly(u)) return goto("dash");
+
+  const obras = visibleObrasForUser(u);
+
+  root.innerHTML = `
+    <div class="grid2">
+      <div class="card">
+        <div class="h1">Obras</div>
+        <div class="row" style="justify-content:space-between">
+          <div class="small">Selecione uma obra</div>
+          <div class="row">
+            ${canManageObras(u)?'<button id="btnAddObra" class="btn">+ Adicionar obra</button>':''}
+            ${canManageUsers(u)?'<button id="btnUsers" class="btn">Usuários</button>':''}
+          </div>
+        </div>
         <div class="hr"></div>
         <table class="table">
-          <thead>
-            <tr>
-              <th>Obra</th>
-              <th class="small">Blocos</th>
-              <th class="small">Apto/Bloco</th>
-            </tr>
-          </thead>
           <tbody>
-            ${state.obras_index.map(o=>`
+            ${obras.map(o=>`
               <tr>
-                <td><b>${esc(o.name)}</b></td>
-                <td class="small">${o.config.numBlocks}</td>
-                <td class="small">${o.config.aptsPerBlock}</td>
+                <td>
+                  <b>${esc(o.name)}</b><br>
+                  <span class="small">${esc(o.city||"-")}</span>
+                </td>
+                <td><button class="btn" data-open="${o.id}">Abrir</button></td>
               </tr>
             `).join("")}
           </tbody>
@@ -752,1365 +813,156 @@ function renderLogin(root){
     </div>
   `;
 
-  $("#btnLogin").onclick = ()=>{
-    const id = ($("#loginUser").value||"").trim();
-    const pin = ($("#loginPin").value||"").trim();
-    const user = state.users.find(u=>u.id===id && u.active);
-    if(!user){ toast("Usuário inválido"); return; }
-    if(user.pin !== pin){ toast("PIN incorreto"); return; }
-    setSessionUserId(user.id);
-    // route
-    if(user.role==="execucao"){
-      const obraId = (user.obraIds||[])[0];
-      goto("obra", { obraId });
-    }else if(canViewOnly(user)){
-      goto("dash");
-    }else{
-      goto("home");
-    }
-  };
-}
-
-function renderDash(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-  if(!canViewOnly(u)) return goto("home");
-
-  const stats = state.obras_index.map(o=>{
-    const s = calcObraStats(o.id);
-    return { id:o.id, name:o.name, ...s };
-  });
-  const total = stats.reduce((a,s)=>({ total:a.total+s.total, conclu:a.conclu+s.conclu, aguard:a.aguard+s.aguard, pend:a.pend+s.pend }), {total:0, conclu:0, aguard:0, pend:0});
-
-  root.innerHTML = `
-    <div class="card">
-      <div class="row">
-        <div>
-          <div class="h1">Visão Geral</div>
-          <div class="small">Somatório de todas as obras</div>
-        </div>
-        <div class="row" style="gap:8px">
-          ${canManageUsers(u) ? `<button id="btnUsersDash" class="btn">Usuários</button>` : ``}
-        </div>
-      </div>
-      <div class="hr"></div>
-
-      <div class="kpis">
-        <div class="kpi">
-          <div class="kpi__v">${total.conclu}</div>
-          <div class="kpi__l">Concluídos (conferidos)</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.aguard}</div>
-          <div class="kpi__l">Aguardando conferência</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.pend}</div>
-          <div class="kpi__l">Com pendência</div>
-        </div>
-      </div>
-
-      <div class="hr"></div>
-
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Obra</th>
-            <th class="small" style="text-align:center">Concluídos</th>
-            <th class="small" style="text-align:center">Aguardando</th>
-            <th class="small" style="text-align:center">Pendência</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${stats.map(s=>`
-            <tr>
-              <td><b>${esc(s.name)}</b><div class="small">Total: ${s.total}</div></td>
-              <td style="text-align:center"><b>${s.conclu}</b></td>
-              <td style="text-align:center"><b>${s.aguard}</b></td>
-              <td style="text-align:center"><b>${s.pend}</b></td>
-              <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-
   $$('button[data-open]').forEach(b=>{
     b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
   });
-}
 
-function renderHome(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-  if(canViewOnly(u)) return goto("dash");
+  const btnUsers = $("#btnUsers");
+  if(btnUsers) btnUsers.onclick = ()=>goto("users");
 
-  root.innerHTML = `
-    <div class="grid2">
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="h1">Obras</div>
-            <div class="small">Selecione uma obra para ver blocos e apartamentos.</div>
-          </div>
-          <div class="row" style="gap:8px">
-            <button id="btnDash" class="btn">Visão Geral</button>
-            ${canManageObras(u) ? `<button id="btnAddObra" class="btn btn--orange">+ Adicionar obra</button>` : ``}
-            <button id="btnUsers" class="btn">Usuários</button>
-            
-          </div>
-        </div>
-        <div class="hr"></div>
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Obra</th>
-              <th class="small" style="text-align:center">Concluídos</th>
-              <th class="small" style="text-align:center">Aguardando</th>
-              <th class="small" style="text-align:center">Pendência</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${state.obras_index.map(o=>{
-              const s = calcObraStats(o.id);
-              return `
-                <tr>
-                  <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
-                  <td style="text-align:center"><b>${s.conclu}</b></td>
-                  <td style="text-align:center"><b>${s.aguard}</b></td>
-                  <td style="text-align:center"><b>${s.pend}</b></td>
-                  <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
-                </tr>
-              `;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
+  const btnAddObra = $("#btnAddObra");
+  if(btnAddObra){
+    btnAddObra.onclick = ()=>{
+      const name = prompt("Nome da obra:");
+      if(!name) return;
 
-      <div class="card">
-        <div class="h2">Permissões</div>
-        <div class="small">Regras principais do protótipo.</div>
-        <div class="hr"></div>
-        <div class="pills">
-          <span class="badge"><span class="dot dot--o"></span> Aguardando</span>
-          <span class="badge"><span class="dot dot--r"></span> Pendência</span>
-          <span class="badge"><span class="dot dot--g"></span> Concluído</span>
-        </div>
-        <div class="hr"></div>
-        <div class="small">
-          <b>Qualidade / Supervisor</b>: adicionam pendências. Supervisor confere (aprovar/reprovar). Qualidade pode reabrir.<br><br>
-          <b>Execução</b>: só marca como FEITO na obra vinculada.<br><br>
-          <b>Diretor / Engenheiro / Coordenador</b>: só visualização.
-        </div>
-      </div>
-    </div>
-  `;
+      const blocks = Number(prompt("Quantidade de blocos:", "10")||0);
+      const apts = Number(prompt("Aptos por bloco (12 ou 16):", "16")||16);
 
-  $("#btnDash").onclick = ()=> goto("dash");
-  const addBtn = $("#btnAddObra");
-  if(addBtn){
-    addBtn.onclick = ()=>{
-      const u = currentUser();
-      if(!canManageObras(u)) return toast("Sem permissão.");
-      const { backdrop, close } = openModal(`
-        <div class="modal">
-          <div class="row">
-            <div>
-              <div class="h2">Adicionar obra</div>
-              <div class="small">Somente Qualidade e Supervisor</div>
-            </div>
-            <button class="btn btn--ghost" id="mClose">✕</button>
-          </div>
-          <div class="hr"></div>
-          <div class="grid">
-            <div>
-              <div class="small">Nome da obra</div>
-              <input id="mObraName" class="input" placeholder="Ex.: Paraty - Entregas" />
-            </div>
-            <div>
-              <div class="small">Código (opcional)</div>
-              <input id="mObraId" class="input" placeholder="Ex.: paraty" />
-            </div>
-            <div>
-              <div class="small">Criar login da Execução (1 por obra)</div>
-              <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
-                <div>
-                  <div class="small">Usuário Execução</div>
-                  <input id="mExecUser" class="input" placeholder="Ex.: exec_paraty" />
-                </div>
-                <div>
-                  <div class="small">PIN Execução (4 dígitos)</div>
-                  <input id="mExecPin" class="input" inputmode="numeric" placeholder="Ex.: 1234" />
-                </div>
-              </div>
-            </div>
-            <div>
-            </div>
-            <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
-              <div>
-                <div class="small">Blocos</div>
-                <input id="mBlocks" class="input" inputmode="numeric" placeholder="Ex.: 10" />
-              </div>
-              <div>
-                <div class="small">Apto por bloco</div>
-                <select id="mApts" class="input">
-                  <option value="12">12</option>
-                  <option value="16">16</option>
-                </select>
-              </div>
-            </div>
-            <div class="row" style="justify-content:flex-end">
-              <button id="mAddObra" class="btn btn--orange">Adicionar</button>
-            </div>
-          </div>
-        </div>
-      `);
-      $("#mClose", backdrop).onclick = close;
-      $("#mAddObra", backdrop).onclick = ()=>{
-        const name = ($("#mObraName", backdrop).value||"").trim();
-        const blocks = Number(($("#mBlocks", backdrop).value||"").trim());
-        const apts = Number($("#mApts", backdrop).value);
-        if(!name){ toast("Informe o nome."); return; }
-        if(!blocks || blocks<1 || blocks>60){ toast("Blocos inválido."); return; }
-        const id = name.toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"");
-        const r = addObra(id, name, blocks, apts);
-        if(!r.ok){ toast(r.msg); return; }
+      const city = prompt("Cidade (valparaiso ou aguaslindas):","valparaiso");
 
-        // criar (opcional) login de execução 1 por obra
-        const execUser = (($("#mExecUser", backdrop).value||"").trim());
-        const execPin  = (($("#mExecPin", backdrop).value||"").trim());
+      const id = slugify(name);
 
-        if(execUser || execPin){
-          if(!execUser){ toast("Informe o usuário da Execução."); return; }
-          if(!/^[0-9]{4}$/.test(execPin)){ toast("PIN da Execução deve ter 4 dígitos."); return; }
+      const r = addObra(id, name, blocks, apts);
+      if(!r || !r.ok) return toast("Erro ao criar obra");
 
-          // garante 1 login de execução por obra
-          const already = state.users.find(u=>u.role==="execucao" && (u.obraIds||[])[0]===id && u.active);
-          if(already){
-            toast("Já existe Execução para essa obra.");
-            return;
-          }
-          const exists = state.users.find(u=>u.id===execUser);
-          if(exists){
-            toast("Usuário de Execução já existe.");
-            return;
-          }
-          state.users.push({ id: execUser, name: "Execução " + name, role:"execucao", pin: execPin, obraIds:[id], active:true });
-          saveState();
-        }
+      state.obras[id].city = (city||"valparaiso").toLowerCase();
 
-        close();
-        toast("Obra adicionada!");
-        goto("home");
-      };
+      saveState();
+      render();
     };
   }
-
-  $$('button[data-del]').forEach(btn=>{
-    btn.onclick = ()=>{
-      const u = currentUser();
-      if(!canDeleteObra(u)) return toast("Sem permissão.");
-      const obraId = btn.getAttribute("data-del");
-      const obra = state.obras[obraId];
-      const ok = confirm(`Apagar a obra "${obra?.name||obraId}"?\n\nIsso remove do app (irreversível no protótipo).`);
-      if(!ok) return;
-      deleteObra(obraId);
-      toast("Obra apagada.");
-      goto("home");
-    };
-  });
-
-  $("#btnUsers").onclick = ()=> goto("users");
-
-  $$('button[data-open]').forEach(b=>{
-    b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
-  });
 }
 
 function renderObra(root){
   const u = currentUser();
-  if(!u) return goto("login");
-
   const obraId = nav.params.obraId;
-  const obra = state.obras[obraId];
-  if(!obra){ toast("Obra não encontrada"); return goto(canViewOnly(u) ? "dash" : "home"); }
 
-  // execução só pode na obra vinculada
-  if(u.role==="execucao" && !(u.obraIds||[]).includes(obraId)){
-    toast("Sem permissão.");
-    return goto("login");
+  if(!canAccessObra(u, obraId)){
+    toast("Sem acesso");
+    return goto("home");
   }
 
-  const blocks = Object.keys(obra.blocks);
+  const obra = state.obras[obraId];
+  if(!obra) return toast("Obra não encontrada");
+
+  const blocks = Object.keys(obra.blocks||{});
 
   root.innerHTML = `
     <div class="card">
-      <div class="row">
-        <div>
-          <div class="h1">${esc(obra.name)}</div>
-          <div class="small">${obra.config.numBlocks} blocos • ${obra.config.aptsPerBlock} apto/bloco</div>
-        </div>
-        <div class="row" style="gap:8px">
-          ${canViewOnly(u) ? "" : `<button class="btn" id="btnHome">Obras</button>`}
-          <button class="btn" id="btnDash2">Visão Geral</button>
-          <button class="btn btn--accent" id="btnPDF">Gerar PDF</button>
-        </div>
-      </div>
-
+      <div class="h1">${esc(obra.name)}</div>
+      <div class="small">${esc(obra.city||"-")}</div>
       <div class="hr"></div>
-      <div class="small">Escolha o bloco:</div>
-      <div class="pills" id="blockPills">
-        ${blocks.map(b=>{ const dots = blockDots(obra.blocks[b]); return `<div class="pill" data-b="${b}">${b.replace("B","Bloco ")}${dots}</div>`; }).join("")}
+      <div class="grid">
+        ${blocks.map(b=>`
+          <button class="btn" data-b="${b}">${b}</button>
+        `).join("")}
       </div>
-    </div>
-
-    <div style="height:12px"></div>
-
-    <div class="card" id="blockArea">
-      <div class="small">Selecione um bloco acima.</div>
     </div>
   `;
 
-  if($("#btnHome")) $("#btnHome").onclick = ()=> goto("home");
-  $("#btnDash2").onclick = ()=> goto("dash");
-
-  $("#btnPDF").onclick = ()=> generateObraPDF(obraId);
-
-  const blockArea = $("#blockArea");
-  $$('#blockPills .pill').forEach(p=>{
-    p.onclick = ()=>{
-      $$('#blockPills .pill').forEach(x=>x.classList.remove("pill--active"));
-      p.classList.add("pill--active");
-      const blockId = p.getAttribute("data-b");
-      renderBlock(blockArea, obraId, blockId);
-    };
-  });
-}
-
-
-function obraCounts(obra){
-  let pend=0, agu=0, conc=0;
-  const blocks=Object.values(obra.blocks||{});
-  blocks.forEach(b=>{
-    const apts=Object.values(b.apartments||{});
-    apts.forEach(a=>{
-      (a.pendencias||[]).forEach(p=>{
-        const s=String(p.state||"pendente").toLowerCase();
-        if(s==="feito") agu++;
-        else if(s==="conferido"||s==="concluido"||s==="aprovado") conc++;
-        else pend++; // pendente ou reprovado
-      });
-    });
-  });
-  return {pend, agu, conc};
-}
-
-function statusLabel(p){
-  const s = String(p.state||"pendente").toLowerCase();
-  if(s==="pendente") return "PENDENTE";
-  if(s==="feito") return "FEITO (aguardando aprovação)";
-  if(s==="conferido" || s==="concluido" || s==="aprovado") return "CONCLUÍDO";
-  if(s==="reprovado") return "REPROVADO";
-  return s.toUpperCase();
-}
-function sortBlockIds(ids){
-  return ids.slice().sort((a,b)=>{
-    const na = parseInt(String(a).replace(/\D/g,""))||0;
-    const nb = parseInt(String(b).replace(/\D/g,""))||0;
-    return na-nb;
-  });
-}
-function sortAptNums(nums){
-  return nums.slice().sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0));
-}
-function nowBR(){
-  try{
-    return new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-  }catch(e){
-    return new Date().toLocaleString("pt-BR");
-  }
-}
-function countStatusBuckets(obra){
-  let pend=0, aguard=0, concl=0;
-  const blocks = Object.values(obra.blocks||{});
-  blocks.forEach(bl=>{
-    Object.values(bl.apartments||{}).forEach(ap=>{
-      (ap.pendencias||[]).forEach(p=>{
-        const s=String(p.state||'pendente').toLowerCase();
-        if(s==='feito') aguard++;
-        else if(s==='conferido' || s==='concluido' || s==='aprovado') concl++;
-        else pend++; // pendente ou reprovado
-      });
-    });
-  });
-  return {pend, aguard, concl};
-}
-
-function generateObraPDF(obraId){
-  const obra = state.obras[obraId];
-  if(!obra){ toast("Obra não encontrada"); return; }
-
-  const PDF = window.jspdf?.jsPDF || (window.jspdf && window.jspdf.jsPDF) || (window.jspdf && window.jspdf.default);
-  if(!PDF){
-    toast("Biblioteca PDF não carregou. Verifique internet e recarregue.");
-    return;
-  }
-
-  // Contagem por APARTAMENTO (não por item)
-  function aptCategory(apto){
-    const ps = apto?.pendencias || [];
-    if(ps.length===0) return "sem_registros";
-    const hasPend = ps.some(p=>String(p.state||"pendente").toLowerCase()==="pendente" || String(p.state||"").toLowerCase()==="reprovado");
-    if(hasPend) return "pendente";
-    const hasFeito = ps.some(p=>String(p.state||"").toLowerCase()==="feito");
-    if(hasFeito) return "aguardando";
-    return "concluido"; // todas conferidas/aprovadas
-  }
-
-  function obraAptCounts(obra){
-    let pend=0, agu=0, conc=0, sem=0;
-    const blocks = Object.values(obra.blocks||{});
-    blocks.forEach(b=>{
-      const apts = Object.values(b.apartments||{});
-      apts.forEach(a=>{
-        const cat = aptCategory(a);
-        if(cat==="pendente") pend++;
-        else if(cat==="aguardando") agu++;
-        else if(cat==="concluido") conc++;
-        else sem++;
-      });
-    });
-    return {pend, agu, conc, sem};
-  }
-
-  // Ordenação de locais dentro do apto
-  const LOC_ORDER = ["varanda","sala","quarto 1","quarto1","quarto 2","quarto2","banheiro","cozinha","área de serviço","area de serviço","area de servico","área de servico"];
-  function locRank(loc){
-    const s = String(loc||"").trim().toLowerCase();
-    if(!s) return 999;
-    // normaliza alguns
-    const norm = s.replace(/\s+/g," ").replace("á","a").replace("ã","a").replace("ç","c");
-    const map = {
-      "quarto1":"quarto 1",
-      "quarto 01":"quarto 1",
-      "quarto2":"quarto 2",
-      "quarto 02":"quarto 2",
-      "area de servico":"area de serviço",
-      "área de servico":"area de serviço",
-      "area de servico":"area de serviço",
-    };
-    const key = map[norm] || norm;
-    const idx = ["varanda","sala","quarto 1","quarto 2","banheiro","cozinha","area de serviço","área de serviço"].findIndex(x=>x===key);
-    return idx>=0 ? idx : 999;
-  }
-
-  const doc = new PDF({ unit:"pt", format:"a4" });
-  const margin = 40;
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-
-  const blocks = sortBlockIds(Object.keys(obra.blocks||{}));
-  const counts = obraAptCounts(obra);
-
-  const safeName = slugify(obra.name||obraId).replace(/-/g,"_") || obraId;
-  const ts = new Date().toISOString().slice(0,16).replace(/[:T]/g,"");
-
-  let firstPage = true;
-
-  blocks.forEach(bid=>{
-    const block = obra.blocks[bid];
-    const aptNums = aptNumsForBlock(obra, block);
-
-    aptNums.forEach(an=>{
-      const a = getApartmentView(obraId, bid, an);
-
-      if(!firstPage) doc.addPage();
-      firstPage = false;
-
-      let y = margin;
-
-      // Cabeçalho (no 1º apto inclui título e resumo; nos demais cabeçalho curto)
-      doc.setFont("helvetica", "bold");
-      if(firstPage===false && doc.getNumberOfPages()===1){
-        // (Não usado)
-      }
-      if(doc.getNumberOfPages()===1){
-        doc.setFontSize(14);
-        doc.text(`RELATÓRIO DE PENDÊNCIAS — ${obra.name}`, margin, y);
-        y += 20;
-
-        doc.setFont("helvetica","normal");
-        doc.setFontSize(10);
-        doc.text(`Gerado em: ${nowBR()}`, margin, y);
-        y += 16;
-
-        doc.setFontSize(10);
-        doc.text(`Resumo (apartamentos): ${counts.pend} pendentes • ${counts.agu} aguardando aprovação • ${counts.conc} concluídos • ${counts.sem} sem registros`, margin, y);
-        y += 18;
-      } else {
-        doc.setFontSize(12);
-        doc.text(`${obra.name}`, margin, y);
-        y += 16;
-        doc.setFont("helvetica","normal");
-        doc.setFontSize(10);
-        doc.text(`Gerado em: ${nowBR()}`, margin, y);
-        y += 14;
-      }
-
-      // Identificação do apto (sempre)
-      doc.setFont("helvetica","bold");
-      doc.setFontSize(12);
-      doc.text(`${bid.replace("B","Bloco ")} — Apto ${an}`, margin, y);
-      y += 16;
-      doc.setFont("helvetica","normal");
-      doc.setFontSize(11);
-
-      const pend = (a?.pendencias||[]).slice();
-
-      if(pend.length===0){
-        doc.setFont("helvetica","normal");
-        doc.setFontSize(11);
-        doc.text("Sem registros até o momento.", margin, y);
-        return;
-      }
-
-      // Ordena pendências por local (e mantém estabilidade)
-      pend.sort((p1,p2)=>{
-        const r1 = locRank(p1.location);
-        const r2 = locRank(p2.location);
-        if(r1!==r2) return r1-r2;
-        const l1 = String(p1.location||"").toLowerCase();
-        const l2 = String(p2.location||"").toLowerCase();
-        if(l1!==l2) return l1.localeCompare(l2);
-        const t1 = String(p1.title||"").toLowerCase();
-        const t2 = String(p2.title||"").toLowerCase();
-        return t1.localeCompare(t2);
-      });
-
-      const lineGap = 14;
-
-      pend.forEach(p=>{
-        const label = statusLabel(p);
-        const title = (p.title||"").trim();
-        const loc = (p.location||"").trim();
-        const text = `• [${label}] ${title}${loc ? " — " + loc : ""}`;
-        const maxW = pageW - margin*2;
-        const lines = doc.splitTextToSize(text, maxW);
-        lines.forEach(ln=>{
-          if(y + lineGap > pageH - margin){
-            // não deve acontecer muito, mas garante
-            doc.addPage();
-            y = margin;
-          }
-          doc.text(ln, margin, y);
-          y += lineGap;
-        });
-      });
-    });
-  });
-
-  doc.save(`relatorio_${safeName}_${ts}.pdf`);
-}
-
-
-
-function renderBlock(container, obraId, blockId){
-  const obra = state.obras[obraId];
-  const block = obra.blocks[blockId];
-  const u = currentUser();
-
-  const nums = aptNumsForBlock(obra, block);
-  const apts = nums.map(n=>getApartmentView(obraId, blockId, n)).sort((a,b)=>Number(a.num)-Number(b.num));
-
-  container.innerHTML = `
-    <div class="row">
-      <div>
-        <div class="h2">${blockId.replace("B","Bloco ")}</div>
-        <div class="small">Toque em um apartamento para ver pendências.</div>
-      </div>
-      <div class="small">Legenda: <span class="badge"><span class="dot dot--g"></span> ok</span></div>
-    </div>
-    <div class="hr"></div>
-    <div class="apts">
-      ${apts.map(a=>{
-        const st = aptStatus(a);
-        const dot = st.dot ? `<span class="dot dot--${st.dot}"></span>` : `<span class="dot" style="background:rgba(255,255,255,.12)"></span>`;
-        const ok = st.dot==="g" ? "✓" : "";
-        return `
-          <div class="apt" data-ap="${esc(a.num)}">
-            <div class="row" style="align-items:flex-start">
-              <div class="apt__n">${esc(a.num)}</div>
-              <div style="font-weight:900;color:rgba(255,255,255,.8)">${ok}</div>
-            </div>
-            <div class="apt__s">${dot}<span>${esc(st.label)}</span></div>
-          </div>
-        `;
-      }).join("")}
-    </div>
-  `;
-
-  $$('.apt', container).forEach(el=>{
-    el.onclick = ()=>{
-      const apto = el.getAttribute("data-ap");
-      goto("apto", { obraId, blockId, apto });
-    };
+  $$('button[data-b]').forEach(b=>{
+    b.onclick=()=>goto("apto",{ obraId, blockId: b.getAttribute("data-b") });
   });
 }
 
 function renderApto(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-
-  const { obraId, blockId, apto } = nav.params;
+  const { obraId, blockId } = nav.params;
   const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
-  let apt = getOrMakeApartment(obraId, blockId, apto);
-  if(!apt){ toast("Apartamento não encontrado"); return goto("obra",{ obraId }); }
+  const block = obra.blocks[blockId];
 
-  // execução só pode na obra vinculada
-  if(u.role==="execucao" && !(u.obraIds||[]).includes(obraId)){
-    toast("Sem permissão.");
-    return goto("login");
-  }
-
-  const st = aptStatus(apt);
+  const nums = aptNumsForBlock(obra, block);
 
   root.innerHTML = `
-    <div class="grid2">
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="h1">${esc(obra.name)}</div>
-            <div class="small">${blockId.replace("B","Bloco ")} • Apto ${esc(apto)}</div>
-          </div>
-          <div class="badge">
-            ${st.dot ? `<span class="dot dot--${st.dot}"></span>` : `<span class="dot" style="background:rgba(255,255,255,.12)"></span>`}
-            <span>${esc(st.label)}</span>
-          </div>
-        </div>
-
-        <div class="hr"></div>
-
-        <div class="row">
-          <div class="h2">Pendências</div>
-          ${canCreate(u) ? `<button id="btnAddAptFoto" class="btn">+ Foto do apto</button>` : ``}
-          ${canCreate(u) ? `<button id="btnAddPend" class="btn btn--orange">+ Adicionar</button>` : ``}
-        </div>
-
-        <div class="hr"></div>
-        <div id="pendList" class="grid"></div>
-      </div>
-
-      <div class="card">
-        <div class="h2">Ações</div>
-        <div class="small">Permissões por perfil.</div>
-        <div class="hr"></div>
-        <div class="small">
-          <b>Execução</b>: marcar como FEITO.<br>
-          <b>Supervisor</b>: aprovar/reprovar (conferência).<br>
-          <b>Qualidade/Supervisor</b>: reabrir.
-        </div>
-      </div>
-    </div>
-  `;
-
-  const aptThumbs = $("#aptThumbs");
-
-  const btnAptFoto = $("#btnAddAptFoto");
-  if(btnAptFoto){
-    btnAptFoto.onclick = async ()=>{
-      const u = currentUser();
-      if(!canCreate(u)){ toast("Sem permissão."); return; }
-      const input = document.createElement("input");
-      input.type="file"; input.accept="image/*"; input.capture="environment";
-      input.onchange = async ()=>{
-        const file = input.files && input.files[0]; if(!file) return;
-        if(file.size > 1_500_000){ toast("Foto muito pesada. Tente uma menor."); return; }
-        try{
-          const dataUrl = await readImageAsDataURL(file);
-          apt.photos = apt.photos || [];
-          apt.photos.push({ id: uid("ph"), dataUrl, addedAt: new Date().toISOString(), addedBy: { id:u.id, name:u.name } });
-          saveState();
-          toast("Foto do apto adicionada.");
-          render();
-          toast('Fotos desativadas nesta versão.');
-        }catch(e){ console.error(e); toast("Falha ao adicionar foto."); }
-      };
-      input.click();
-    };
-  }
-
-  if($("#btnAddPend")){
-    $("#btnAddPend").onclick = ()=> openAddPendencia(obraId, blockId, apto);
-  }
-
-  renderPendencias($("#pendList"), obraId, blockId, apto);
-}
-
-function renderPendencias(container, obraId, blockId, apto){
-  const u = currentUser();
-  const apt = state.obras[obraId].blocks[blockId].apartments[apto];
-  const ps = apt.pendencias || [];
-
-  if(ps.length===0){
-    container.innerHTML = `<div class="small">Nenhuma pendência cadastrada.</div>`;
-    return;
-  }
-
-  container.innerHTML = ps.map(p=>{
-    const badge = (p.state==="conferido") ? `<span class="badge"><span class="dot dot--g"></span> Conferido</span>`
-                : (p.state==="feito") ? `<span class="badge"><span class="dot dot--o"></span> Feito</span>`
-                : (p.state==="reprovado") ? `<span class="badge"><span class="dot dot--r"></span> Reprovado</span>`
-                : `<span class="badge"><span class="dot dot--r"></span> Pendente</span>`;
-
-    const canDo = canMarkDone(u) && (p.state==="pendente" || p.state==="reprovado");
-    const canApprove = canReview(u) && (p.state==="feito");
-    const canReopenP = canReopen(u) && (p.state==="reprovado" || p.state==="feito" || p.state==="conferido");
-
-    return `
-      <div class="card" style="padding:12px">
-        <div class="row">
-          <div>
-            <div style="font-weight:900">${esc(p.title)}</div>
-            <div class="small">${esc(p.category||"")} ${p.location ? "• "+esc(p.location) : ""}</div>
-            <div class="small">Criado por: <b>${esc((p.createdBy && p.createdBy.name)||"-")}</b></div>
-          </div>
-          ${badge}
-        </div>
-
-        <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
-          ${(() => {
-            const mine = (p.createdBy && u && p.createdBy.id===u.id);
-            const canEditMine = (canCreate(u) && mine);
-            const btns = [];
-            if(canEditMine){
-                            btns.push(`<button class="btn btn--danger" data-act="del" data-id="${p.id}">Apagar</button>`);
-            }
-            return btns.join("");
-          })()}
-        </div>
-
-        <div class="hr" style="margin:10px 0"></div>
-        
-        <div class="small">
-          <b>Histórico</b><br>
-          ${(()=>{
-            const lines = [];
-            if(p.events && p.events.length){
-              p.events.forEach(ev=>lines.push(fmtEvent(ev)));
-            }else{
-              if(p.createdAt) lines.push(`Criado: <b>${fmtDT(p.createdAt)}</b> por <b>${esc((p.createdBy && p.createdBy.name)||"-")}</b>`);
-              if(p.doneAt) lines.push(`Feito: <b>${fmtDT(p.doneAt)}</b> por <b>${esc((p.doneBy && p.doneBy.name)||"-")}</b>`);
-              if(p.reviewedAt) lines.push(`Conferência: <b>${fmtDT(p.reviewedAt)}</b> por <b>${esc((p.reviewedBy && p.reviewedBy.name)||"-")}</b>`);
-              if(p.reopenedAt) lines.push(`Reaberto: <b>${fmtDT(p.reopenedAt)}</b>`);
-            }
-            return lines.join("<br>");
-          })()}
-        </div>
-        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
-          ${canDo ? `<button class="btn btn--orange" data-act="feito" data-id="${esc(p.id)}">Marcar FEITO</button>` : ``}
-          ${canApprove ? `<button class="btn btn--green" data-act="aprovar" data-id="${esc(p.id)}">Aprovar</button>
-                          <button class="btn btn--red" data-act="reprovar" data-id="${esc(p.id)}">Reprovar</button>` : ``}
-          ${canReopenP ? `<button class="btn" data-act="reabrir" data-id="${esc(p.id)}">Reabrir</button>` : ``}
-          
-        </div>
-
-        ${(p.state==='reprovado' && p.rejection?.note) ? `<div class="small" style="margin-top:8px"><b>Reprovação:</b> ${esc(p.rejection.note)} <span class="small">(${fmtDT(p.rejection.at)} • ${esc((p.rejection.by && p.rejection.by.name) || "-")})</span></div>` : ``}
-      </div>
-    `;
-  }).join("");
-
-  $$("button[data-act]", container).forEach(btn=>{
-    btn.onclick = ()=>{
-      const act = btn.getAttribute("data-act");
-      const id = btn.getAttribute("data-id");
-      if(act==="feito") return actFeito(obraId, blockId, apto, id);
-      if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
-      if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
-      if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
-      if(act==="del") return actDeletePend(obraId, blockId, apto, id);
-    };
-  });
-}
-
-function findPend(obraId, blockId, apto, pendId){
-  const apt = state.obras[obraId].blocks[blockId].apartments[apto];
-  const p = (apt.pendencias||[]).find(x=>x.id===pendId);
-  return { apt, p };
-}
-
-function actFeito(obraId, blockId, apto, pendId){
-  const __k=_lockKey(obraId,blockId,apto,pendId);
-  if(__feitoLock[__k]){ return; }
-  __feitoLock[__k]=true;
-  setTimeout(()=>{ __feitoLock[__k]=false; }, 800);
-
-  const u = currentUser();
-  if(!canMarkDone(u)){ toast("Sem permissão."); return; }
-  const { p } = findPend(obraId, blockId, apto, pendId);
-  if(!p) return;
-  if(p.state==="feito"){
-    p.state = "pendente";
-    p.doneAt = null;
-    p.doneBy = null;
-    pushEvent(p, "desfeito", u);
-    saveState();
-    toast("Desfeito.");
-    render();
-    return;
-  }
-  p.state = 'feito';
-  p.doneAt = new Date().toISOString();
-  p.doneBy = { id:u.id, name:u.name, role:u.role };
-  // se veio de reprovação, limpa conferência anterior e motivo para voltar ao fluxo
-  p.reviewedAt = null;
-  p.reviewedBy = null;
-  p.rejection = null;
-  pushEvent(p, "feito", u);
-  saveState();
-  toast("Marcado como FEITO.");
-  render();
-}
-
-function actAprovar(obraId, blockId, apto, pendId){
-  const u = currentUser();
-  if(!canReview(u)){ toast("Sem permissão."); return; }
-  const { p } = findPend(obraId, blockId, apto, pendId);
-  if(!p) return;
-  p.state = "conferido";
-  p.reviewedAt = new Date().toISOString();
-  p.reviewedBy = { id:u.id, name:u.name, role:u.role };
-  p.rejection = null;
-  pushEvent(p, "aprovado", u);
-  saveState();
-  toast("Conferido (aprovado).");
-  render();
-}
-
-function actReprovar(obraId, blockId, apto, pendId){
-  const u = currentUser();
-  if(!canReview(u)){ toast("Sem permissão."); return; }
-  const note = prompt("Motivo da reprovação (curto):") || "";
-  const { p } = findPend(obraId, blockId, apto, pendId);
-  if(!p) return;
-  p.state = "reprovado";
-  p.reviewedAt = new Date().toISOString();
-  p.reviewedBy = { id:u.id, name:u.name, role:u.role };
-  p.rejection = { note, at: new Date().toISOString(), by: { id:u.id, name:u.name } };
-  pushEvent(p, "reprovado", u, { note });
-  saveState();
-  toast("Reprovado.");
-  render();
-}
-
-function actReabrir(obraId, blockId, apto, pendId){
-  const u = currentUser();
-  if(!canReopen(u)){ toast("Sem permissão."); return; }
-  const { p } = findPend(obraId, blockId, apto, pendId);
-  if(!p) return;
-  p.state = "pendente";
-  p.reopenedAt = new Date().toISOString();
-  pushEvent(p, "reaberto", u);
-  saveState();
-  toast("Reaberto.");
-  render();
-}
-
-
-
-function actDeletePend(obraId, blockId, apto, pendId){
-  const u = currentUser();
-  if(!canCreate(u)){ toast("Sem permissão."); return; }
-  const apt = state.obras[obraId].blocks[blockId].apartments[apto];
-  const idx = (apt.pendencias||[]).findIndex(x=>x.id===pendId);
-  if(idx<0) return;
-  const p = apt.pendencias[idx];
-  if(!(p.createdBy && u && p.createdBy.id===u.id)){ toast("Você só pode apagar o que você criou."); return; }
-  if(!confirm("Apagar esta pendência?")) return;
-  // log before removing
-  pushEvent(p, "apagado", u);
-  apt.pendencias.splice(idx,1);
-  saveState();
-  toast("Pendência apagada.");
-  render();
-}
-
-
-
-function openAddPendencia(obraId, blockId, apto){
-  const u = currentUser();
-  if(!canCreate(u)){ toast("Sem permissão."); return; }
-
-  const backdrop = document.createElement("div");
-  backdrop.className = "modalBackdrop";
-  backdrop.innerHTML = `
-    <div class="modal">
-      <div class="row">
-        <div>
-          <div class="h2">Adicionar pendência</div>
-          <div class="small">${esc(blockId.replace("B","Bloco "))} • Apto ${esc(apto)}</div>
-        </div>
-        <button class="btn btn--ghost" id="mClose">✕</button>
-      </div>
+    <div class="card">
+      <div class="h1">${esc(obra.name)} - ${blockId}</div>
       <div class="hr"></div>
       <div class="grid">
-        <div>
-          <div class="small">Título</div>
-          <input id="mTitle" class="input" placeholder="Ex.: Ajustar porta / Rejunte / Vazamento..." />
-        </div>
-        <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
-          <div>
-            <div class="small">Categoria</div>
-            <input id="mCat" class="input" placeholder="Ex.: Hidráulica" />
-          </div>
-          <div>
-            <div class="small">Local</div>
-            <input id="mLoc" class="input" placeholder="Ex.: Banheiro / Cozinha" />
-          </div>
-        </div>
-        <div class="row" style="justify-content:flex-end">
-          <button id="mAdd" class="btn btn--orange">Adicionar</button>
-        </div>
+        ${nums.map(n=>`
+          <button class="btn" data-a="${n}">${n}</button>
+        `).join("")}
       </div>
     </div>
   `;
-  document.body.appendChild(backdrop);
 
-  const close = ()=> backdrop.remove();
-  $("#mClose", backdrop).onclick = close;
-  backdrop.addEventListener("click", (e)=>{ if(e.target===backdrop) close(); });
+  $$('button[data-a]').forEach(b=>{
+    b.onclick=()=>{
+      const apto = b.getAttribute("data-a");
+      nav.params.apto = apto;
+      renderAptoDetalhe(root);
+    };
+  });
+}
 
-  $("#mAdd", backdrop).onclick = ()=>{
-    const title = ($("#mTitle", backdrop).value||"").trim();
-    const category = ($("#mCat", backdrop).value||"").trim();
-    const location = ($("#mLoc", backdrop).value||"").trim();
-    if(!title){ toast("Informe o título."); return; }
+function renderAptoDetalhe(root){
+  const { obraId, blockId, apto } = nav.params;
 
-    const apt = state.obras[obraId].blocks[blockId].apartments[apto];
+  const apt = getOrMakeApartment(obraId, blockId, apto);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="h1">Apto ${apto}</div>
+      <div class="hr"></div>
+      <button id="addPend" class="btn btn--orange">+ Pendência</button>
+      <div class="hr"></div>
+      ${(apt.pendencias||[]).map(p=>`
+        <div class="card">
+          <b>${esc(p.title)}</b><br>
+          <span class="small">${esc(p.state)}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  $("#addPend").onclick = ()=>{
+    const title = prompt("Descrição:");
+    if(!title) return;
+
     apt.pendencias.push({
-    events: [],
-    id: uid("p"),
-      title, category, location,
-      state: "pendente",
-      createdAt: new Date().toISOString(),
-      createdBy: { id:u.id, name:u.name, role:u.role },
-      doneAt:null, doneBy:null,
-      reviewedAt:null, reviewedBy:null,
-      rejection:null,
-      reopenedAt:null,
-      photos: []
+      id: uid(),
+      title,
+      state:"pendente",
+      createdAt: new Date().toISOString()
     });
+
     saveState();
-    close();
-    toast("Pendência adicionada.");
-    render();
+    renderAptoDetalhe(root);
   };
 }
-
-
-function openModal(html){
-  const backdrop = document.createElement("div");
-  backdrop.className = "modalBackdrop";
-  backdrop.innerHTML = html;
-  document.body.appendChild(backdrop);
-  const close = ()=> backdrop.remove();
-  backdrop.addEventListener("click",(e)=>{ if(e.target===backdrop) close(); });
-  return { backdrop, close };
-}
-
-function addObra(id, name, numBlocks, aptsPerBlock){
-  id = slugify(id);
-  if(!id) return { ok:false, msg:"ID inválido" };
-  if(state.obras[id]) return { ok:false, msg:"Já existe uma obra com esse ID" };
-
-  // CRIAÇÃO LEVE: não pré-cria todos os apartamentos (evita estourar LocalStorage e mantém o app rápido).
-  // Os apartamentos são materializados quando você abre o apto ou quando chegam dados do Firestore.
-  const nb = Number(numBlocks);
-  const apb = Number(aptsPerBlock);
-
-  const blocks = {};
-  for(let b=1;b<=nb;b++){
-    const bid = "B"+b;
-    blocks[bid] = { id: bid, apartments: {} };
-  }
-
-  const obra = { id, name, config:{ numBlocks: nb, aptsPerBlock: apb }, blocks };
-  state.obras[id] = obra;
-  state.obras_index.push({ id, name, config: obra.config });
-  lastAction = 'createObra';
-  saveState();
-  return { ok:true, msg:"Obra adicionada!" };
-}
-
-function deleteObra(obraId){
-  delete state.obras[obraId];
-  state.obras_index = state.obras_index.filter(o=>o.id!==obraId);
-  // remove usuários de execução vinculados exclusivamente a essa obra (opcional: manter)
-  state.users = state.users.map(u=>{
-    if(u.role==="execucao" && (u.obraIds||[]).includes(obraId)){
-      return { ...u, active:false };
-    }
-    return u;
-  });
-  saveState();
-}
-
 
 function renderUsers(root){
   const u = currentUser();
-  if(!u) return goto("login");
-  if(!canManageUsers(u)) { toast("Sem permissão."); return goto(canViewOnly(u) ? "dash" : "home"); }
+  if(!canManageUsers(u)) return goto("home");
 
-  const active = state.users.filter(x=>x.active);
   root.innerHTML = `
-    <div class="grid2">
-      <div class="card">
+    <div class="card">
+      <div class="h1">Usuários</div>
+      <div class="hr"></div>
+      ${state.users.map(x=>`
         <div class="row">
-          <div>
-            <div class="h1">Usuários</div>
-            <div class="small">Gerencie logins (usuário + PIN)</div>
-          </div>
-          <div class="row" style="gap:8px">
-            <button id="btnBackUsers" class="btn">Voltar</button>
-            ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
-          </div>
+          <b>${esc(x.name)}</b>
+          <span class="small">${x.role}</span>
         </div>
-        <div class="hr"></div>
-
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Usuário</th>
-              <th class="small">Perfil</th>
-              <th class="small">Acesso</th>
-              <th style="text-align:right">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${active.map(x=>{
-              const access = (x.obraIds||[])[0]==="*" ? "Todas" : (x.obraIds||[]).join(", ");
-              return `
-                <tr>
-                  <td><b>${esc(x.id)}</b><div class="small">${esc(x.name||"")}</div></td>
-                  <td class="small">${esc(x.role)}</td>
-                  <td class="small">${esc(access)}</td>
-                  <td style="text-align:right; white-space:nowrap">
-                    <button class="btn" data-pin="${esc(x.id)}">Alterar PIN</button>
-                    ${u.role==="supervisor" && x.role!=="diretor" ? `<button class="btn btn--red" data-off="${esc(x.id)}">Desativar</button>` : ``}
-                  </td>
-                </tr>
-              `;
-            }).join("")}
-          </tbody>
-        </table>
-
-        <div class="hr"></div>
-        <div class="small">
-          <b>Regras:</b> Qualidade e Supervisor podem gerenciar usuários. Somente Supervisor cria outro Supervisor e pode desativar usuários.
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="h2">Criar login de Execução</div>
-        <div class="small">1 login por obra (para usar em mais de um celular, use o mesmo usuário + PIN).</div>
-        <div class="hr"></div>
-
-        <div class="grid">
-          <div>
-            <div class="small">Obra</div>
-            <select id="execObra" class="input">
-              ${state.obras_index.map(o=>`<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("")}
-            </select>
-          </div>
-          <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
-            <div>
-              <div class="small">Usuário</div>
-              <input id="execUser" class="input" placeholder="Ex.: exec_costa_rica" />
-            </div>
-            <div>
-              <div class="small">PIN (4 dígitos)</div>
-              <input id="execPin" class="input" inputmode="numeric" placeholder="Ex.: 1234" />
-            </div>
-          </div>
-          <div class="row" style="justify-content:flex-end">
-            <button id="btnCreateExec" class="btn btn--orange">Criar Execução</button>
-          </div>
-        </div>
-      </div>
+      `).join("")}
     </div>
   `;
-
-  $("#btnBackUsers").onclick = ()=>{
-    const u2 = currentUser();
-    goto(canViewOnly(u2) ? "dash" : "home");
-  };
-
-  $("#btnCreateExec").onclick = ()=>{
-    const obraId = $("#execObra").value;
-    const userId = ($("#execUser").value||"").trim();
-    const pin = ($("#execPin").value||"").trim();
-    if(!userId){ toast("Informe o usuário."); return; }
-    if(!/^[0-9]{4}$/.test(pin)){ toast("PIN deve ter 4 dígitos."); return; }
-
-    const exists = state.users.find(x=>x.id===userId);
-    if(exists){ toast("Usuário já existe."); return; }
-
-    const already = state.users.find(x=>x.role==="execucao" && (x.obraIds||[])[0]===obraId && x.active);
-    if(already){ toast("Já existe Execução para essa obra."); return; }
-
-    const obraName = state.obras[obraId]?.name || obraId;
-    state.users.push({ id:userId, name:"Execução "+obraName, role:"execucao", pin, obraIds:[obraId], active:true });
-    saveState();
-    toast("Login Execução criado.");
-    goto("users");
-  };
-
-  $$('button[data-pin]').forEach(b=>{
-    b.onclick = ()=>{
-      const id = b.getAttribute("data-pin");
-      const newPin = prompt("Novo PIN (4 dígitos) para: "+id) || "";
-      if(!/^[0-9]{4}$/.test(newPin.trim())){ toast("PIN inválido."); return; }
-      const user = state.users.find(x=>x.id===id);
-      if(!user) return;
-      user.pin = newPin.trim();
-      saveState();
-      toast("PIN atualizado.");
-      goto("users");
-    };
-  });
-
-  $$('button[data-off]').forEach(b=>{
-    b.onclick = ()=>{
-      const id = b.getAttribute("data-off");
-      const target = state.users.find(x=>x.id===id);
-      if(!target) return;
-      const ok = confirm("Desativar usuário "+id+"?");
-      if(!ok) return;
-      const typed = prompt("Para confirmar, digite DESATIVAR:") || "";
-      if(typed.trim().toUpperCase()!=="DESATIVAR"){ toast("Cancelado."); return; }
-      target.active = false;
-      if(getSessionUserId()===String(id).toLowerCase()){
-        setSessionUserId("");
-      }
-      saveState();
-      toast("Usuário desativado.");
-      goto("users");
-    };
-  });
-
-  const addSup = $("#btnAddSup");
-  if(addSup){
-    addSup.onclick = ()=>{
-      const id = prompt("Usuário do novo Supervisor (ex.: supervisor_02)") || "";
-      const pin = prompt("PIN (4 dígitos) do novo Supervisor:") || "";
-      const uid = id.trim();
-      const p = pin.trim();
-      if(!uid){ toast("Usuário inválido."); return; }
-      if(!/^[0-9]{4}$/.test(p)){ toast("PIN inválido."); return; }
-      if(state.users.find(x=>x.id===uid)){ toast("Usuário já existe."); return; }
-      state.users.push({ id: uid, name:"Supervisor", role:"supervisor", pin:p, obraIds:["*"], active:true });
-      saveState();
-      toast("Supervisor criado.");
-      goto("users");
-    };
-  }
 }
-
 
 function renderSettings(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-
-  root.innerHTML = `
-    <div class="grid2">
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="h1">Configurações</div>
-            <div class="small">Versão do protótipo: <b>v26</b></div>
-          </div>
-          <div class="row" style="gap:8px">
-            <button id="btnBackSettings" class="btn">Voltar</button>
-          </div>
-        </div>
-
-        <div class="hr"></div>
-
-        <div class="small">
-          <b>Atenção:</b> este protótipo ainda salva dados localmente no navegador (um passo antes do modo “ao vivo”).
-        </div>
-
-        ${canResetData(u) ? `
-          <div class="hr"></div>
-          <div class="h2">Área do Supervisor</div>
-          <div class="small">Zerar apaga tudo deste dispositivo (obras, pendências, fotos e usuários). Use só em último caso.</div>
-          <div class="hr"></div>
-          <button id="btnResetAll" class="btn btn--red">Zerar tudo</button>
-        ` : `
-          <div class="hr"></div>
-          <div class="small">Sem ações administrativas para este perfil.</div>
-        `}
-      </div>
-
-      <div class="card">
-        <div class="h2">Segurança</div>
-        <div class="small">Regras aplicadas agora:</div>
-        <div class="hr"></div>
-        <div class="small">
-          • Botão “Zerar tudo” não aparece para qualidade/execução/visualização.<br>
-          • Para zerar, o Supervisor precisa confirmar e informar o próprio PIN.
-        </div>
-      </div>
-    </div>
-  `;
-
-  $("#btnBackSettings").onclick = ()=>{
-    const u2 = currentUser();
-    if(canViewOnly(u2)) goto("dash"); else goto("home");
-  };
-
-  const btn = $("#btnResetAll");
-  if(btn){
-    btn.onclick = ()=>{
-      const ok = confirm("ATENÇÃO: Isso apaga TUDO deste navegador/dispositivo. Deseja continuar?");
-      if(!ok) return;
-      const typed = prompt("Para confirmar, digite ZERAR TUDO:") || "";
-      if(typed.trim().toUpperCase()!=="ZERAR TUDO"){ toast("Cancelado."); return; }
-      const pin = prompt("Digite seu PIN de supervisor para confirmar:") || "";
-      const sup = currentUser();
-      if(!sup || sup.role!=="supervisor"){ toast("Sem permissão."); return; }
-      if(pin.trim() !== sup.pin){ toast("PIN incorreto."); return; }
-      state = seed();
-      saveState();
-      toast("Dados zerados.");
-      goto("login");
-    };
-  }
+  root.innerHTML = `<div class="card"><b>Configurações</b></div>`;
 }
 
-// boot
-(function boot(){
-  // If session exists, route accordingly; else login.
-  const u = currentUser();
-  if(u){
-    if(u.role==="execucao"){
-      goto("obra", { obraId: (u.obraIds||[])[0] });
-    }else if(canViewOnly(u)){
-      goto("dash");
-    }else{
-      goto("home");
-    }
-  }else{
-    goto("login");
-  }
-})();
-
-
-
-
-function canDeletePend(p){
-  const u = currentUser();
-  if(!u) return false;
-  if(u.role === "supervisor") return true;
-  if(u.role === "qualidade") return true;
-  return (p && p.criadoPor && p.criadoPor.id === u.id);
-}
-
-function actDel(id){
-  try{
-    if(!view || view.type !== "apt") return;
-    const obra = getObraById(view.obraId);
-    const apt  = obra && findApt(obra, view.bloco, view.apto);
-    if(!apt || !apt.pendencias) return;
-    const p = apt.pendencias.find(x=>x.id===id);
-    if(!p) return;
-    if(!canDeletePend(p)){
-      toast("Sem permissão para apagar.");
-      return;
-    }
-    if(!confirm("Apagar esta pendência?")) return;
-    apt.pendencias = apt.pendencias.filter(x=>x.id!==id);
-    saveState();
-    render();
-    toast("Pendência apagada.");
-  }catch(e){
-    toast("Falha ao apagar.");
-  }
-}
-
-function actDelPhoto(pId, photoId){
-  try{
-    if(!view || view.type !== "apt") return;
-    const obra = getObraById(view.obraId);
-    const apt  = obra && findApt(obra, view.bloco, view.apto);
-    if(!apt || !apt.pendencias) return;
-    const p = apt.pendencias.find(x=>x.id===pId);
-    if(!p || !p.fotos) return;
-    if(!canDeletePend(p)){
-      toast("Sem permissão para apagar foto.");
-      return;
-    }
-    if(!confirm("Apagar esta foto?")) return;
-    p.fotos = p.fotos.filter(f=>f.id!==photoId);
-    saveState();
-    render();
-    toast("Foto apagada.");
-  }catch(e){
-    toast("Falha ao apagar foto.");
-  }
-}
-
-
-// V33: Delegação de cliques para botões (Editar/Apagar/Foto/Feito/Aprovar/Reprovar/Reabrir)
-document.addEventListener("click", function(e){
-  const t = e.target;
-  if(!t) return;
-
-  // Botões de ação da pendência
-  if(t.matches && t.matches("button[data-act]")){
-    e.preventDefault(); e.stopPropagation();
-    const act = t.getAttribute("data-act");
-    const id = t.getAttribute("data-id");
-    const obraId = (typeof nav!=="undefined" && nav.params) ? nav.params.obraId : null;
-    const blockId = (typeof nav!=="undefined" && nav.params) ? nav.params.blockId : null;
-    const apto = (typeof nav!=="undefined" && nav.params) ? nav.params.apto : null;
-    if(!obraId || !blockId || !apto || !id) return;
-
-    if(act==="edit") return actEditPend(obraId, blockId, apto, id);
-    if(act==="del") return actDeletePend(obraId, blockId, apto, id);
-    if(act==="foto") return actAddFotoPend(obraId, blockId, apto, id);
-    if(act==="feito") return actFeito(obraId, blockId, apto, id);
-    if(act==="aprovar") return actAprovar(obraId, blockId, apto, id);
-    if(act==="reprovar") return actReprovar(obraId, blockId, apto, id);
-    if(act==="reabrir") return actReabrir(obraId, blockId, apto, id);
-  }
-
-  // Click na miniatura: abre foto (apagar só dentro do modal)
-  if(t.classList && t.classList.contains("thumb")){
-    const pid = t.getAttribute("data-pid");
-    const phid = t.getAttribute("data-ph");
-    const obraId = (typeof nav!=="undefined" && nav.params) ? nav.params.obraId : null;
-    const blockId = (typeof nav!=="undefined" && nav.params) ? nav.params.blockId : null;
-    const apto = (typeof nav!=="undefined" && nav.params) ? nav.params.apto : null;
-    if(!obraId || !blockId || !apto || !pid || !phid){
-      return toast('Fotos desativadas nesta versão.');
-    }
-    const u = currentUser();
-    try{
-      const apt = state.obras[obraId].blocks[blockId].apartments[apto];
-      const p = (apt.pendencias||[]).find(x=>x.id===pid);
-      const photo = (p && p.photos ? p.photos.find(x=>x.id===phid) : null);
-      const mine = !!(photo && u && photo.addedBy && photo.addedBy.id===u.id);
-      toast('Fotos desativadas nesta versão.');
-    }catch(err){
-      toast('Fotos desativadas nesta versão.');
-    }
-  }
-});
-
-
-let __feitoLock = {};
-function _lockKey(obraId, blockId, apto, pendId){ return [obraId,blockId,apto,pendId].join("|"); }
+// ================= INIT =================
+ensureSystemDefaults();
+initFirestore();
+render();
