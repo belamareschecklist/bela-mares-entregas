@@ -170,7 +170,7 @@ function seed(){
     for(let b=1;b<=numBlocks;b++){
       const bid = "B"+b;
       const apartments = {};
-      const nums = (aptsPerBlock===12) ? APT_NUMS_12 : (aptsPerBlock===16 ? APT_NUMS_16 : APT_NUMS_12); // (se você quiser 16 depois, a gente coloca)
+      const nums = (aptsPerBlock===12) ? APT_NUMS_12 : (aptsPerBlock===16 ? APT_NUMS_16 : APT_NUMS_12);
       nums.forEach(n=>{
         apartments[n] = { num:n, pendencias: [], photos: [] };
       });
@@ -734,8 +734,8 @@ function blockDots(obraId, block){
 
 function calcObraStats(obraId){
   const obra = state.obras[obraId];
-  if(!obra) return { total:0, conclu:0, aguard:0, pend:0 };
-  let total=0, conclu=0, aguard=0, pend=0;
+  if(!obra) return { total:0, semVistoria:0, conclu:0, aguard:0, pend:0 };
+  let total=0, semVistoria=0, conclu=0, aguard=0, pend=0;
 
   Object.values(obra.blocks).forEach(b=>{
     const nums = aptNumsForBlock(obra, b);
@@ -743,7 +743,7 @@ function calcObraStats(obraId){
       const a = getApartmentView(obraId, b.id, an);
       total++;
       const ps = a.pendencias||[];
-      if(ps.length===0){ conclu++; return; }
+      if(ps.length===0){ semVistoria++; return; }
 
       let hasPend=false, hasWait=false;
       ps.forEach(p=>{
@@ -756,7 +756,7 @@ function calcObraStats(obraId){
       else conclu++;
     });
   });
-  return { total, conclu, aguard, pend };
+  return { total, semVistoria, conclu, aguard, pend };
 }
 
 function openModal(html){
@@ -852,7 +852,7 @@ function renderDash(root){
     const s = calcObraStats(o.id);
     return { id:o.id, name:o.name, ...s };
   });
-  const total = stats.reduce((a,s)=>({ total:a.total+s.total, conclu:a.conclu+s.conclu, aguard:a.aguard+s.aguard, pend:a.pend+s.pend }), {total:0, conclu:0, aguard:0, pend:0});
+  const total = stats.reduce((a,s)=>({ total:a.total+s.total, semVistoria:a.semVistoria+s.semVistoria, conclu:a.conclu+s.conclu, aguard:a.aguard+s.aguard, pend:a.pend+s.pend }), {total:0, semVistoria:0, conclu:0, aguard:0, pend:0});
 
   root.innerHTML = `
     <div class="card">
@@ -869,16 +869,24 @@ function renderDash(root){
 
       <div class="kpis">
         <div class="kpi">
-          <div class="kpi__v">${total.conclu}</div>
-          <div class="kpi__l">Concluídos (conferidos)</div>
+          <div class="kpi__v">${total.total}</div>
+          <div class="kpi__l">Qtd aptos</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.semVistoria}</div>
+          <div class="kpi__l">Sem vistoria</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__v">${total.pend}</div>
+          <div class="kpi__l">Com pendência</div>
         </div>
         <div class="kpi">
           <div class="kpi__v">${total.aguard}</div>
           <div class="kpi__l">Aguardando conferência</div>
         </div>
         <div class="kpi">
-          <div class="kpi__v">${total.pend}</div>
-          <div class="kpi__l">Com pendência</div>
+          <div class="kpi__v">${total.conclu}</div>
+          <div class="kpi__l">Concluídos</div>
         </div>
       </div>
 
@@ -888,19 +896,23 @@ function renderDash(root){
         <thead>
           <tr>
             <th>Obra</th>
-            <th class="small" style="text-align:center">Concluídos</th>
+            <th class="small" style="text-align:center">Qtd aptos</th>
+            <th class="small" style="text-align:center">Sem vistoria</th>
+            <th class="small" style="text-align:center">Com pendência</th>
             <th class="small" style="text-align:center">Aguardando</th>
-            <th class="small" style="text-align:center">Pendência</th>
+            <th class="small" style="text-align:center">Concluídos</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           ${stats.map(s=>`
             <tr>
-              <td><b>${esc(s.name)}</b><div class="small">Total: ${s.total}</div></td>
-              <td style="text-align:center"><b>${s.conclu}</b></td>
-              <td style="text-align:center"><b>${s.aguard}</b></td>
+              <td><b>${esc(s.name)}</b></td>
+              <td style="text-align:center"><b>${s.total}</b></td>
+              <td style="text-align:center"><b>${s.semVistoria}</b></td>
               <td style="text-align:center"><b>${s.pend}</b></td>
+              <td style="text-align:center"><b>${s.aguard}</b></td>
+              <td style="text-align:center"><b>${s.conclu}</b></td>
               <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
             </tr>
           `).join("")}
@@ -942,9 +954,11 @@ function renderHome(root){
           <thead>
             <tr>
               <th>Obra</th>
-              <th class="small" style="text-align:center">Concluídos</th>
+              <th class="small" style="text-align:center">Qtd aptos</th>
+              <th class="small" style="text-align:center">Sem vistoria</th>
+              <th class="small" style="text-align:center">Com pendência</th>
               <th class="small" style="text-align:center">Aguardando</th>
-              <th class="small" style="text-align:center">Pendência</th>
+              <th class="small" style="text-align:center">Concluídos</th>
               <th></th>
             </tr>
           </thead>
@@ -954,9 +968,11 @@ function renderHome(root){
               return `
                 <tr>
                   <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
-                  <td style="text-align:center"><b>${s.conclu}</b></td>
-                  <td style="text-align:center"><b>${s.aguard}</b></td>
+                  <td style="text-align:center"><b>${s.total}</b></td>
+                  <td style="text-align:center"><b>${s.semVistoria}</b></td>
                   <td style="text-align:center"><b>${s.pend}</b></td>
+                  <td style="text-align:center"><b>${s.aguard}</b></td>
+                  <td style="text-align:center"><b>${s.conclu}</b></td>
                   <td style="text-align:right"><button class="btn" data-open="${esc(o.id)}">Abrir</button> ${canDeleteObra(u) ? `<button class="btn btn--red" data-del="${esc(o.id)}">Apagar</button>` : ``}</td>
                 </tr>
               `;
@@ -1054,6 +1070,11 @@ function renderHome(root){
         </div>
       `);
       $("#mClose", backdrop).onclick = close;
+      try{
+        backdrop.style.alignItems = "flex-start";
+        backdrop.style.paddingTop = "24px";
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }catch(_){ }
       $("#mAddObra", backdrop).onclick = ()=>{
         const name = ($("#mObraName", backdrop).value||"").trim();
         const blocks = Number(($("#mBlocks", backdrop).value||"").trim());
