@@ -1,5 +1,5 @@
-const APP_VERSION = "live-sync-v1";
-const STATE_VERSION = 28;
+const APP_VERSION = "live-sync-v2";
+const STATE_VERSION = 29;
 
 /* Bela Mares — Checklist */
 /* Base com Firebase compat e sync ao vivo restaurado */
@@ -447,12 +447,20 @@ function applyApartmentFromDoc(doc){
     if(!obraId || !blockId || !apto) return;
 
     const target = ensureAptPath(obraId, blockId, apto);
+
     target.num = apto;
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : [];
     target.photos = Array.isArray(doc.photos) ? doc.photos : [];
 
     if(!target._meta) target._meta = {};
     if(typeof doc.updatedAtMs === "number") target._meta.updatedAtMs = doc.updatedAtMs;
+    target._meta.synced = true;
+
+    if(doc.vistoriadoAt) target.vistoriadoAt = doc.vistoriadoAt;
+    if(doc.checkedAt) target.checkedAt = doc.checkedAt;
+    if(doc.reviewedAt) target.reviewedAt = doc.reviewedAt;
+    if(typeof doc.vistoriado !== "undefined") target.vistoriado = doc.vistoriado;
+    if(typeof doc.status !== "undefined") target.status = doc.status;
   }catch(e){
     console.warn("Falha ao aplicar apartment doc:", e);
   }
@@ -826,16 +834,28 @@ function visibleObrasFor(u){
 }
 
 function apartmentStatus(a){
-  const ps = a.pendencias || [];
-  const aptPhotos = a.photos || [];
-  const hasAnyData = ps.length > 0 || aptPhotos.length > 0;
+  const ps = a?.pendencias || [];
+  const aptPhotos = a?.photos || [];
 
-  if(!hasAnyData) return "sem_vistoria";
+  const hasPendencias = ps.length > 0;
+  const hasPhotos = aptPhotos.length > 0;
+
+  const hasInspectionMark =
+    !!a?._meta?.synced ||
+    !!a?._meta?.updatedAtMs ||
+    !!a?.vistoriadoAt ||
+    !!a?.checkedAt ||
+    !!a?.reviewedAt ||
+    !!a?.vistoriado ||
+    a?.status === "conferido" ||
+    a?.status === "vistoriado";
+
   if(ps.some(p => p.state === "reprovado")) return "reprovado";
   if(ps.some(p => p.state === "pendente")) return "pendente";
-  if(ps.length > 0 && ps.every(p => p.state === "feito")) return "feito";
-  if(ps.length > 0 && ps.every(p => p.state === "conferido")) return "conferido";
-  if(ps.length === 0 && aptPhotos.length > 0) return "conferido";
+  if(hasPendencias && ps.every(p => p.state === "feito")) return "feito";
+  if(hasPendencias && ps.every(p => p.state === "conferido")) return "conferido";
+
+  if(!hasPendencias && (hasPhotos || hasInspectionMark)) return "conferido";
 
   return "sem_vistoria";
 }
