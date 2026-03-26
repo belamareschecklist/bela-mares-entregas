@@ -1,5 +1,5 @@
-const APP_VERSION = "live-sync-v2";
-const STATE_VERSION = 29;
+const APP_VERSION = "live-sync-v3";
+const STATE_VERSION = 30;
 
 /* Bela Mares — Checklist */
 /* Base com Firebase compat e sync ao vivo restaurado */
@@ -473,18 +473,7 @@ function persistableState(){
 }
 
 function persistableMetaState(){
-  const copy = JSON.parse(JSON.stringify(persistableState()));
-  if(copy && copy.obras){
-    for(const oid of Object.keys(copy.obras)){
-      const ob = copy.obras[oid];
-      if(!ob || !ob.blocks) continue;
-      for(const bid of Object.keys(ob.blocks)){
-        const blk = ob.blocks[bid];
-        if(blk && blk.apartments) delete blk.apartments;
-      }
-    }
-  }
-  return copy;
+  return JSON.parse(JSON.stringify(persistableState()));
 }
 
 function initFirestore(){
@@ -531,30 +520,9 @@ function initFirestore(){
         }
 
         const currentSession = state?.session || null;
-        const existingAptsByObra = {};
-
-        Object.keys(state.obras || {}).forEach(oid=>{
-          existingAptsByObra[oid] = {};
-          const ob = state.obras[oid];
-          Object.keys(ob.blocks || {}).forEach(bid=>{
-            existingAptsByObra[oid][bid] = ob.blocks[bid]?.apartments || {};
-          });
-        });
 
         parsed.version = STATE_VERSION;
         state = migrateState(parsed);
-
-        Object.keys(existingAptsByObra).forEach(oid=>{
-          if(!state.obras[oid]) return;
-          Object.keys(existingAptsByObra[oid] || {}).forEach(bid=>{
-            if(!state.obras[oid].blocks) state.obras[oid].blocks = {};
-            if(!state.obras[oid].blocks[bid]) state.obras[oid].blocks[bid] = { id:bid, apartments:{} };
-            state.obras[oid].blocks[bid].apartments = {
-              ...(state.obras[oid].blocks[bid].apartments || {}),
-              ...(existingAptsByObra[oid][bid] || {})
-            };
-          });
-        });
 
         state.session = currentSession;
         ensureSystemDefaults();
