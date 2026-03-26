@@ -1,5 +1,5 @@
-const APP_VERSION = "live-sync-v3";
-const STATE_VERSION = 30;
+const APP_VERSION = "live-sync-v4";
+const STATE_VERSION = 31;
 
 /* Bela Mares — Checklist */
 /* Base com Firebase compat e sync ao vivo restaurado */
@@ -65,7 +65,7 @@ function toast(msg){
   el.textContent = msg;
   el.style.display = "block";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
+  toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2600);
 }
 
 function esc(s){
@@ -93,8 +93,7 @@ function slugify(input){
 
 function normalizeCity(v){
   const s = String(v || "").trim().toLowerCase();
-  if(s.includes("aguas")) return "aguaslindas";
-  if(s.includes("águas")) return "aguaslindas";
+  if(s.includes("aguas") || s.includes("águas")) return "aguaslindas";
   return "valparaiso";
 }
 
@@ -145,9 +144,7 @@ function aptNumsByConfig(aptsPerBlock){
 function aptNumsForBlock(obra, block){
   const configured = aptNumsByConfig(obra?.config?.aptsPerBlock || 16);
   const existing = Object.keys(block?.apartments || {}).sort((a,b)=> Number(a)-Number(b));
-
   if(!existing.length) return configured;
-
   const all = new Set([...configured, ...existing]);
   return Array.from(all).sort((a,b)=> Number(a)-Number(b));
 }
@@ -409,6 +406,7 @@ let fbMetaUnsub = null;
 let fbApartmentsUnsub = null;
 let saveTimer = null;
 let isApplyingRemote = false;
+let legacyImportedOnce = false;
 
 function makeAptDocId(obraId, blockId, apto){
   return `${String(obraId)}__${String(blockId)}__${String(apto)}`;
@@ -473,7 +471,195 @@ function persistableState(){
 }
 
 function persistableMetaState(){
-  return JSON.parse(JSON.stringify(persistableState()));
+  const copy = JSON.parse(JSON.stringify(persistableState()));
+  if(copy && copy.obras){
+    for(const oid of Object.keys(copy.obras)){
+      const ob = copy.obras[oid];
+      if(!ob || !ob.blocks) continue;
+      for(const bid of Object.keys(ob.blocks)){
+        const blk = ob.blocks[bid];
+        if(blk && blk.apartments) delete blk.apartments;
+      }
+    }
+  }
+  return copy;
+}
+
+function apartmentDataScore(a){
+  if(!a) return 0;
+  const pend = Array.isArray(a.pendencias) ? a.pendencias.length : 0;
+  const photos = Array.isArray(a.photos) ? a.photos.length : 0;
+  const marks =
+    (a._meta?.synced ? 1 : 0) +
+    (a._meta?.updatedAtMs ? 1 : 0) +
+    (a.vistoriadoAt ? 1 : 0) +
+    (a.checkedAt ? 1 : 0) +
+    (a.reviewedAt ? 1 : 0) +
+    (a.vistoriado ? 1 : 0) +
+    ((a.status === "conferido" || a.status === "vistoriado") ? 1 : 0);
+
+  return pend * 100 + photos * 10 + marks;
+}
+
+function mergeLegacyStateIntoCurrent(legacy){
+  if(!legacy || !legacy.obras) return false;
+
+  let changed = false;
+
+  Object.keys(legacy.obras).forEach(obraId=>{
+    const legacyObra = legacy.obras[obraId];
+    if(!legacyObra) return;
+
+    if(!state.obras[obraId]){
+      state.obras[obraId] = {
+        id: legacyObra.id || obraId,
+        name: legacyObra.name || obraId,
+        city: normalizeCity(legacyObra.city || "valparaiso"),
+        config: legacyObra.config || {
+          numBlocks: Object.keys(legacyObra.blocks || {}).length || 1,
+          aptsPerBlock: 16
+        },
+        blocks: {}
+      };
+      changed = true;
+    }
+
+    const targetObra = state.obras[obraId];
+    if(!targetObra.blocks) targetObra.blocks = {};
+
+    Object.keys(legacyObra.blocks || {}).forEach(blockId=>{
+      const legacyBlock = legacyObra.blocks[blockId];
+      if(!targetObra.blocks[blockId]){
+        targetObra.blocks[blockId] = { id:blockId, apartments:{} };
+        changed = true;
+      }
+
+      const targetBlock = targetObra.blocks[blockId];
+      if(!targetBlock.apartments) targetBlock.apartments = {};
+
+      Object.keys(legacyBlock.apartments || {}).forEach(apto=>{
+        const oldApt = legacyBlock.apartments[apto];
+        const curApt = targetBlock.apartments[apto];
+
+        if(!curApt){
+          targetBlock.apartments[apto] = JSON.parse(JSON.stringify(oldApt));
+          changed = true;
+          return;
+        }
+
+        const curScore = apartmentDataScore(curApt);
+        const oldScore = apartmentDataScore(oldApt);
+
+        if(oldScore > curScore){
+          targetBlock.apartments[apto] = JSON.parse(JSON.stringify(oldApt));
+          changed = true;
+        }
+      });
+    });
+  });
+
+  if(changed) ensureSystemDefaults();
+  return changed;
+}
+
+async function loadLegacyStateFromFirestore(){
+  if(!fbReady) return false;
+
+  const candidateRefs = [
+    fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("main"),
+    fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("legacy"),
+    fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta_legacy")
+  ];
+
+  for(const ref of candidateRefs){
+    try{
+      const snap = await ref.get();
+      if(!snap.exists) continue;
+
+      const data = snap.data() || {};
+      let parsed = null;
+
+      if(data.meta && typeof data.meta === "string"){
+        try{ parsed = JSON.parse(data.meta); }catch(_){}
+      } else if(data.state && typeof data.state === "string"){
+        try{ parsed = JSON.parse(data.state); }catch(_){}
+      } else if(data.obras || data.users || data.obras_index){
+        parsed = data;
+      }
+
+      if(parsed && parsed.obras){
+        const changed = mergeLegacyStateIntoCurrent(parsed);
+        if(changed){
+          try{
+            safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+          }catch(_){}
+          render();
+          return true;
+        }
+      }
+    }catch(e){
+      console.warn("Falha ao ler legado do Firestore:", e);
+    }
+  }
+
+  return false;
+}
+
+async function republishAllApartmentsToSubcollection(){
+  if(!fbReady) return;
+
+  const allWrites = [];
+  Object.values(state.obras || {}).forEach(obra=>{
+    Object.values(obra.blocks || {}).forEach(block=>{
+      const nums = aptNumsForBlock(obra, block);
+      nums.forEach(apto=>{
+        const apt = getApartmentView(obra.id, block.id, apto);
+        if(apartmentDataScore(apt) > 0){
+          allWrites.push({
+            obraId: obra.id,
+            blockId: block.id,
+            apto: String(apto),
+            apt
+          });
+        }
+      });
+    });
+  });
+
+  for(let i=0;i<allWrites.length;i+=200){
+    const chunk = allWrites.slice(i, i+200);
+    const batch = fbDb.batch();
+
+    chunk.forEach(item=>{
+      const ref = fbDb
+        .collection("apps")
+        .doc("bela_mares_checklist")
+        .collection(APARTMENTS_COLLECTION)
+        .doc(makeAptDocId(item.obraId, item.blockId, item.apto));
+
+      batch.set(ref, {
+        obraId: item.obraId,
+        obraName: state.obras?.[item.obraId]?.name || item.obraId,
+        blockId: item.blockId,
+        apto: item.apto,
+        pendencias: Array.isArray(item.apt.pendencias) ? item.apt.pendencias : [],
+        photos: Array.isArray(item.apt.photos) ? item.apt.photos : [],
+        vistoriadoAt: item.apt.vistoriadoAt || null,
+        checkedAt: item.apt.checkedAt || null,
+        reviewedAt: item.apt.reviewedAt || null,
+        vistoriado: typeof item.apt.vistoriado !== "undefined" ? item.apt.vistoriado : null,
+        status: item.apt.status || null,
+        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAtMs: Date.now()
+      }, { merge:true });
+    });
+
+    try{
+      await batch.commit();
+    }catch(e){
+      console.warn("Falha ao republicar apartments:", e);
+    }
+  }
 }
 
 function initFirestore(){
@@ -520,10 +706,8 @@ function initFirestore(){
         }
 
         const currentSession = state?.session || null;
-
         parsed.version = STATE_VERSION;
         state = migrateState(parsed);
-
         state.session = currentSession;
         ensureSystemDefaults();
 
@@ -573,6 +757,26 @@ function initFirestore(){
         render();
       }
     }, (err)=>console.warn("Apartments snapshot error:", err));
+
+    setTimeout(async ()=>{
+      if(legacyImportedOnce) return;
+      legacyImportedOnce = true;
+
+      try{
+        const imported = await loadLegacyStateFromFirestore();
+        if(imported){
+          await republishAllApartmentsToSubcollection();
+          await saveMetaToFirestore();
+          try{
+            safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
+          }catch(_){}
+          render();
+          toast("Histórico legado restaurado do Firebase");
+        }
+      }catch(e){
+        console.warn("Falha ao importar histórico legado:", e);
+      }
+    }, 1200);
 
   }catch(e){
     console.warn("Falha ao iniciar Firestore:", e);
@@ -822,7 +1026,6 @@ function apartmentStatus(a){
   if(ps.some(p => p.state === "pendente")) return "pendente";
   if(hasPendencias && ps.every(p => p.state === "feito")) return "feito";
   if(hasPendencias && ps.every(p => p.state === "conferido")) return "conferido";
-
   if(!hasPendencias && (hasPhotos || hasInspectionMark)) return "conferido";
 
   return "sem_vistoria";
@@ -1008,7 +1211,6 @@ function bindCommon(){
   $$(".js-home").forEach(b => b.onclick = ()=> goto("home"));
 }
 
-// ---------- Login ----------
 function renderLogin(){
   return `
   <div class="shell shell--center">
@@ -1054,7 +1256,6 @@ function bindLogin(){
   });
 }
 
-// ---------- Home ----------
 function renderHome(u){
   const obras = visibleObrasFor(u);
 
@@ -1117,7 +1318,6 @@ function bindHome(u){
   });
 }
 
-// ---------- Users ----------
 function renderUsers(u){
   if(!canManageUsers(u)) return renderForbidden();
 
@@ -1247,7 +1447,6 @@ function bindUsers(u){
   });
 }
 
-// ---------- Create Obra ----------
 function renderCreateObra(u){
   if(!canManageObras(u)) return renderForbidden();
 
@@ -1373,7 +1572,6 @@ function bindCreateObra(u){
   };
 }
 
-// ---------- Obra ----------
 function renderObra(u, obraId){
   const obra = state.obras[obraId];
   if(!obra || !canSeeObra(u, obraId)) return renderForbidden();
@@ -1457,7 +1655,6 @@ function bindObra(u, obraId){
   }
 }
 
-// ---------- Block ----------
 function renderBlock(u, obraId, blockId){
   const obra = state.obras[obraId];
   const block = obra?.blocks?.[blockId];
@@ -1512,7 +1709,6 @@ function bindBlock(u, obraId, blockId){
   });
 }
 
-// ---------- Apartment ----------
 function renderApartment(u, obraId, blockId, aptNum){
   const obra = state.obras[obraId];
   const block = obra?.blocks?.[blockId];
@@ -1867,7 +2063,6 @@ function bindApartment(u, obraId, blockId, aptNum){
   });
 }
 
-// ---------- History ----------
 function renderHistory(u){
   const rows = allHistoryEntries();
   const filter = routes.historyFilter || "all";
@@ -1941,7 +2136,6 @@ function bindHistory(){
   });
 }
 
-// ---------- Forbidden ----------
 function renderForbidden(){
   return `
   <div class="shell shell--center">
