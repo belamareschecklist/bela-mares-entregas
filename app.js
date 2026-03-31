@@ -1,19 +1,11 @@
-const APP_VERSION = "live-sync-v3-mobileq1";
+const APP_VERSION = "live-sync-v3";
 const STATE_VERSION = 30;
 
 /* Bela Mares — Checklist */
 /* Base com Firebase compat e sync ao vivo restaurado */
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
-const APP_VERSION_KEY = "bm_checklist_app_version";
 let localSaveDisabled = false;
-
-try{
-  const storedVersion = localStorage.getItem(APP_VERSION_KEY) || "";
-  if(storedVersion !== APP_VERSION){
-    localStorage.setItem(APP_VERSION_KEY, APP_VERSION);
-  }
-}catch(e){}
 
 function safeSetItem(key, value){
   if(localSaveDisabled) return;
@@ -151,8 +143,8 @@ function aptNumsByConfig(aptsPerBlock){
 }
 
 function aptNumsForBlock(obra, block){
-  const configured = aptNumsByConfig(((obra && obra.config && obra.config.aptsPerBlock) || 16));
-  const existing = Object.keys(((block && block.apartments) || {})).sort((a,b)=> Number(a)-Number(b));
+  const configured = aptNumsByConfig(obra?.config?.aptsPerBlock || 16);
+  const existing = Object.keys(block?.apartments || {}).sort((a,b)=> Number(a)-Number(b));
 
   if(!existing.length) return configured;
 
@@ -187,9 +179,9 @@ function getOrMakeApartment(obraId, blockId, aptNum){
 
 function getApartmentView(obraId, blockId, aptNum){
   const obra = state.obras[obraId];
-  const block = (obra && obra.blocks) ? obra.blocks[blockId] : null;
+  const block = obra?.blocks?.[blockId];
   const an = String(aptNum);
-  return (block && block.apartments && block.apartments[an])
+  return (block?.apartments && block.apartments[an])
     ? block.apartments[an]
     : makeEmptyApartment(an);
 }
@@ -252,10 +244,6 @@ function seed(){
     createdBy: { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade" },
     doneAt:null,
     doneBy:null,
-    qualityReviewedAt:null,
-    qualityReviewedBy:null,
-    supervisorReviewedAt:null,
-    supervisorReviewedBy:null,
     reviewedAt:null,
     reviewedBy:null,
     rejection:null,
@@ -290,23 +278,6 @@ function migrateState(s){
     if(!obra.blocks) obra.blocks = {};
     Object.values(obra.blocks).forEach(block=>{
       if(!block.apartments) block.apartments = {};
-      Object.values(block.apartments).forEach(apt=>{
-        if(!Array.isArray(apt.pendencias)) apt.pendencias = [];
-        if(!Array.isArray(apt.photos)) apt.photos = [];
-        apt.pendencias.forEach(p=>{
-          if(typeof p.qualityReviewedAt === "undefined") p.qualityReviewedAt = null;
-          if(typeof p.qualityReviewedBy === "undefined") p.qualityReviewedBy = null;
-          if(typeof p.supervisorReviewedAt === "undefined") p.supervisorReviewedAt = null;
-          if(typeof p.supervisorReviewedBy === "undefined") p.supervisorReviewedBy = null;
-          if(p.state === "concluido"){
-            if(!p.supervisorReviewedAt && p.reviewedAt) p.supervisorReviewedAt = p.reviewedAt;
-            if(!p.supervisorReviewedBy && p.reviewedBy) p.supervisorReviewedBy = p.reviewedBy;
-          }else if((p.state === "conferido" || p.state === "reprovado") && !p.qualityReviewedAt && p.reviewedAt){
-            p.qualityReviewedAt = p.reviewedAt;
-            p.qualityReviewedBy = p.reviewedBy || null;
-          }
-        });
-      });
     });
   });
 
@@ -314,8 +285,8 @@ function migrateState(s){
     .filter(x => !!x && !!x.id)
     .map(x => ({
       ...x,
-      city: normalizeCity(x.city || ((s.obras[x.id] && s.obras[x.id].city) || "valparaiso")),
-      config: x.config || ((s.obras[x.id] && s.obras[x.id].config) || { numBlocks:1, aptsPerBlock:16 })
+      city: normalizeCity(x.city || s.obras[x.id]?.city || "valparaiso"),
+      config: x.config || s.obras[x.id]?.config || { numBlocks:1, aptsPerBlock:16 }
     }));
 
   s.users = s.users.map(u=>{
@@ -404,7 +375,7 @@ function ensureSystemDefaults(){
   }).map(x=>({
     ...x,
     city: normalizeCity(x.city),
-    config: x.config || ((state.obras[x.id] && state.obras[x.id].config) || { numBlocks:1, aptsPerBlock:16 })
+    config: x.config || state.obras[x.id]?.config || { numBlocks:1, aptsPerBlock:16 }
   })).sort((a,b)=> a.name.localeCompare(b.name, "pt-BR"));
 
   try{
@@ -548,7 +519,7 @@ function initFirestore(){
           return;
         }
 
-        const currentSession = (state && state.session) || null;
+        const currentSession = state?.session || null;
 
         parsed.version = STATE_VERSION;
         state = migrateState(parsed);
@@ -582,9 +553,9 @@ function initFirestore(){
         if(!obraId || !blockId || !apto) return;
 
         if(ch.type === "removed"){
-          const obra = state.obras ? state.obras[obraId] : null;
-          const block = (obra && obra.blocks) ? obra.blocks[blockId] : null;
-          if(block && block.apartments && block.apartments[apto]){
+          const obra = state.obras?.[obraId];
+          const block = obra?.blocks?.[blockId];
+          if(block?.apartments && block.apartments[apto]){
             delete block.apartments[apto];
             changed = true;
           }
@@ -643,7 +614,7 @@ async function saveApartmentDoc(obraId, blockId, apto){
 
   const payload = {
     obraId,
-    obraName: ((state.obras && state.obras[obraId] && state.obras[obraId].name) || obraId),
+    obraName: state.obras?.[obraId]?.name || obraId,
     blockId,
     apto: String(apto),
     pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
@@ -672,7 +643,7 @@ async function deleteApartmentDoc(obraId, blockId, apto){
 
 async function deleteAllApartmentDocsForObra(obraId){
   if(!fbReady || isApplyingRemote) return;
-  const obra = state.obras ? state.obras[obraId] : null;
+  const obra = state.obras?.[obraId];
   if(!obra) return;
 
   const batch = fbDb.batch();
@@ -780,11 +751,7 @@ function canManageObras(user){
   return !!user && ["supervisor","qualidade"].includes(user.role);
 }
 
-function canQualityReview(user){
-  return !!user && user.role === "qualidade";
-}
-
-function canSupervisorReview(user){
+function canReview(user){
   return !!user && user.role === "supervisor";
 }
 
@@ -835,27 +802,26 @@ function visibleObrasFor(u){
 }
 
 function apartmentStatus(a){
-  const ps = (a && a.pendencias) || [];
-  const aptPhotos = (a && a.photos) || [];
+  const ps = a?.pendencias || [];
+  const aptPhotos = a?.photos || [];
 
   const hasPendencias = ps.length > 0;
   const hasPhotos = aptPhotos.length > 0;
 
   const hasInspectionMark =
-    !!(a && a._meta && a._meta.synced) ||
-    !!(a && a._meta && a._meta.updatedAtMs) ||
-    !!(a && a.vistoriadoAt) ||
-    !!(a && a.checkedAt) ||
-    !!(a && a.reviewedAt) ||
-    !!(a && a.vistoriado) ||
-    (a && a.status === "conferido") ||
-    (a && a.status === "vistoriado") ||
-    (a && a.status === "concluido");
+    !!a?._meta?.synced ||
+    !!a?._meta?.updatedAtMs ||
+    !!a?.vistoriadoAt ||
+    !!a?.checkedAt ||
+    !!a?.reviewedAt ||
+    !!a?.vistoriado ||
+    a?.status === "conferido" ||
+    a?.status === "vistoriado";
 
+  if(ps.some(p => p.state === "reprovado")) return "reprovado";
   if(ps.some(p => p.state === "pendente")) return "pendente";
-  if(ps.some(p => p.state === "feito")) return "feito";
-  if(hasPendencias && ps.every(p => p.state === "concluido")) return "concluido";
-  if(hasPendencias && ps.every(p => p.state === "conferido" || p.state === "concluido")) return "conferido";
+  if(hasPendencias && ps.every(p => p.state === "feito")) return "feito";
+  if(hasPendencias && ps.every(p => p.state === "conferido")) return "conferido";
 
   if(!hasPendencias && (hasPhotos || hasInspectionMark)) return "conferido";
 
@@ -863,7 +829,7 @@ function apartmentStatus(a){
 }
 
 function obraCounters(obra){
-  let total=0, semVist=0, pend=0, feito=0, conferido=0, concluido=0;
+  let total=0, semVist=0, pend=0, feito=0, conferido=0, reprov=0;
 
   Object.values(obra.blocks || {}).forEach(b=>{
     const nums = aptNumsForBlock(obra, b);
@@ -876,15 +842,15 @@ function obraCounters(obra){
       if(st === "pendente") pend++;
       if(st === "feito") feito++;
       if(st === "conferido") conferido++;
-      if(st === "concluido") concluido++;
+      if(st === "reprovado") reprov++;
     });
   });
 
-  return { total, semVist, pend, feito, conferido, concluido };
+  return { total, semVist, pend, feito, conferido, reprov };
 }
 
 function blockCounters(obra, block){
-  let total=0, semVist=0, pend=0, feito=0, conferido=0, concluido=0;
+  let total=0, semVist=0, pend=0, feito=0, conferido=0, reprov=0;
   const nums = aptNumsForBlock(obra, block);
 
   nums.forEach(num=>{
@@ -896,10 +862,10 @@ function blockCounters(obra, block){
     if(st === "pendente") pend++;
     if(st === "feito") feito++;
     if(st === "conferido") conferido++;
-    if(st === "concluido") concluido++;
+    if(st === "reprovado") reprov++;
   });
 
-  return { total, semVist, pend, feito, conferido, concluido };
+  return { total, semVist, pend, feito, conferido, reprov };
 }
 
 function allHistoryEntries(){
@@ -911,8 +877,8 @@ function allHistoryEntries(){
           rows.push({
             type:"Criada",
             date:p.createdAt,
-            by:(p.createdBy && p.createdBy.name) || "-",
-            role:(p.createdBy && p.createdBy.role) || "-",
+            by:p.createdBy?.name || "-",
+            role:p.createdBy?.role || "-",
             obra:obra.name,
             block:block.id,
             apt:apt.num,
@@ -926,8 +892,8 @@ function allHistoryEntries(){
             rows.push({
               type:"Feita",
               date:p.doneAt,
-              by:(p.doneBy && p.doneBy.name) || "-",
-              role:(p.doneBy && p.doneBy.role) || "-",
+              by:p.doneBy?.name || "-",
+              role:p.doneBy?.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
@@ -938,35 +904,19 @@ function allHistoryEntries(){
             });
           }
 
-          if(p.qualityReviewedAt){
+          if(p.reviewedAt && p.state === "conferido"){
             rows.push({
               type:"Conferida",
-              date:p.qualityReviewedAt,
-              by:(p.qualityReviewedBy && p.qualityReviewedBy.name) || "-",
-              role:(p.qualityReviewedBy && p.qualityReviewedBy.role) || "-",
+              date:p.reviewedAt,
+              by:p.reviewedBy?.name || "-",
+              role:p.reviewedBy?.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
               title:p.title,
               category:p.category || "",
               location:p.location || "",
-              dur: p.doneAt ? diffHM(p.doneAt, p.qualityReviewedAt) : "-"
-            });
-          }
-
-          if(p.supervisorReviewedAt && p.state === "concluido"){
-            rows.push({
-              type:"Concluída",
-              date:p.supervisorReviewedAt,
-              by:(p.supervisorReviewedBy && p.supervisorReviewedBy.name) || "-",
-              role:(p.supervisorReviewedBy && p.supervisorReviewedBy.role) || "-",
-              obra:obra.name,
-              block:block.id,
-              apt:apt.num,
-              title:p.title,
-              category:p.category || "",
-              location:p.location || "",
-              dur: p.qualityReviewedAt ? diffHM(p.qualityReviewedAt, p.supervisorReviewedAt) : "-"
+              dur: p.doneAt ? diffHM(p.doneAt, p.reviewedAt) : "-"
             });
           }
 
@@ -974,8 +924,8 @@ function allHistoryEntries(){
             rows.push({
               type:"Reprovada",
               date:p.reviewedAt,
-              by:((p.reviewedBy && p.reviewedBy.name) || "-"),
-              role:((p.reviewedBy && p.reviewedBy.role) || "-"),
+              by:p.reviewedBy?.name || "-",
+              role:p.reviewedBy?.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
@@ -1104,6 +1054,7 @@ function bindLogin(){
   });
 }
 
+// ---------- Home ----------
 function renderHome(u){
   const obras = visibleObrasFor(u);
 
@@ -1122,7 +1073,7 @@ function renderHome(u){
         <div class="grid grid--obra">
           ${arr.map(o=>{
             const obra = state.obras[o.id];
-            const c = obra ? obraCounters(obra) : { total:0, semVist:0, pend:0, feito:0, conferido:0, concluido:0 };
+            const c = obra ? obraCounters(obra) : { total:0, semVist:0, pend:0, feito:0, conferido:0, reprov:0 };
             return `
               <button class="card obra-card js-open-obra" data-obra="${esc(o.id)}">
                 <div class="obra-card__title">${esc(o.name)}</div>
@@ -1132,7 +1083,7 @@ function renderHome(u){
                   <span class="stat stat--pend">Pend.: ${c.pend}</span>
                   <span class="stat stat--feito">Feito: ${c.feito}</span>
                   <span class="stat stat--conf">Conf.: ${c.conferido}</span>
-                  <span class="stat stat--conc">Concl.: ${c.concluido}</span>
+                  <span class="stat stat--repr">Repr.: ${c.reprov}</span>
                 </div>
               </button>`;
           }).join("")}
@@ -1166,6 +1117,7 @@ function bindHome(u){
   });
 }
 
+// ---------- Users ----------
 function renderUsers(u){
   if(!canManageUsers(u)) return renderForbidden();
 
@@ -1233,6 +1185,69 @@ function renderUsers(u){
   </div>`;
 }
 
+function bindUsers(u){
+  const obraSel = $("#newUserObra");
+  const obras = visibleObrasFor(u);
+  obraSel.innerHTML = obras.map(o=> `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
+
+  const btnAddSup = $("#btnAddSup");
+  if(btnAddSup){
+    btnAddSup.onclick = ()=>{
+      const name = prompt("Nome do supervisor:");
+      if(!name) return;
+      const id = slugify(prompt("Usuário (id):") || "");
+      if(!id) return toast("Informe um id válido");
+      const pin = (prompt("PIN:") || "").trim();
+      if(!pin) return toast("Informe um PIN");
+      if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
+
+      state.users.push({
+        id, name, role:"supervisor", pin,
+        obraIds:["*"], active:true, cityScope:"*"
+      });
+      saveState();
+      render();
+      toast("Supervisor criado");
+    };
+  }
+
+  $("#btnCreateUser").onclick = ()=>{
+    const name = ($("#newUserName").value || "").trim();
+    const id = slugify(($("#newUserId").value || "").trim());
+    const pin = ($("#newUserPin").value || "").trim();
+    const role = ($("#newUserRole").value || "").trim();
+    const obraId = ($("#newUserObra").value || "").trim();
+
+    if(!name || !id || !pin) return toast("Preencha nome, usuário e PIN");
+    if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
+    if(role !== "execucao") return toast("Só é permitido criar login de execução aqui");
+    if(!state.obras[obraId]) return toast("Selecione uma obra válida");
+
+    state.users.push({
+      id, name, role, pin,
+      obraIds:[obraId],
+      active:true
+    });
+    saveState();
+    render();
+    toast("Login criado");
+  };
+
+  $$(".js-del-user").forEach(b=>{
+    b.onclick = ()=>{
+      const id = b.dataset.user;
+      const user = state.users.find(x=>x.id===id);
+      if(!user) return;
+      if(!confirm(`Excluir o login "${user.name}"?`)) return;
+      state.users = state.users.filter(x=>x.id!==id);
+      saveState();
+      render();
+      toast("Login excluído");
+    };
+  });
+}
+
+// ---------- Create Obra ----------
 function renderCreateObra(u){
   if(!canManageObras(u)) return renderForbidden();
 
@@ -1298,364 +1313,6 @@ function renderCreateObra(u){
   </div>`;
 }
 
-function renderObra(u, obraId){
-  const obra = state.obras[obraId];
-  if(!obra || !canSeeObra(u, obraId)) return renderForbidden();
-
-  const blocks = Object.values(obra.blocks || {})
-    .sort((a,b)=> Number(String(a.id).replace(/\D/g,"")) - Number(String(b.id).replace(/\D/g,"")))
-    .map(b=>{
-      const c = blockCounters(obra, b);
-      return `
-        <button class="card block-card js-open-block" data-block="${esc(b.id)}">
-          <div class="block-card__title">${esc(b.id)}</div>
-          <div class="obra-stats">
-            <span class="stat stat--sem">Sem vist.: ${c.semVist}</span>
-            <span class="stat stat--pend">Pend.: ${c.pend}</span>
-            <span class="stat stat--feito">Feito: ${c.feito}</span>
-            <span class="stat stat--conf">Conf.: ${c.conferido}</span>
-            <span class="stat stat--conc">Concl.: ${c.concluido}</span>
-          </div>
-        </button>
-      `;
-    }).join("");
-      const deleteBtn = canManageObras(u)
-    ? `<button class="btn btn--subtle-danger btn--small" id="btnDeleteObra">Excluir obra</button>`
-    : ``;
-
-  return `
-  <div class="shell">
-    ${topbar(esc(obra.name), `${obra.city==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} · ${((obra.config && obra.config.numBlocks) || 0)} blocos`, `
-      <button class="btn js-home">Voltar</button>
-      ${deleteBtn}
-      <button class="btn js-logout">Sair</button>
-    `)}
-    <div class="content">
-      <div class="grid grid--block">${blocks}</div>
-    </div>
-  </div>`;
-}
-
-function bindObra(u, obraId){
-  const obra = state.obras[obraId];
-  if(!obra) return;
-
-  $$(".js-open-block").forEach(b=>{
-    b.onclick = ()=> goto("block", { obraId, blockId: b.dataset.block });
-  });
-
-  const btnDelete = $("#btnDeleteObra");
-  if(btnDelete){
-    btnDelete.onclick = async ()=>{
-      const obra = state.obras[obraId];
-      if(!obra) return;
-
-      const execUsers = state.users.filter(x => x.role === "execucao" && (x.obraIds || []).includes(obraId));
-      const execMsg = execUsers.length
-        ? `\nTambém será(ão) excluído(s) o(s) login(s): ${execUsers.map(x=>x.id).join(", ")}`
-        : "";
-
-      if(!confirm(`Excluir a obra "${obra.name}"?${execMsg}\n\nEssa ação remove a obra para poder recriá-la do zero depois.`)) return;
-
-      state._meta.deletedObraIds = Array.from(new Set([...(state._meta.deletedObraIds || []), obraId]));
-      execUsers.forEach(x=>{
-        state._meta.deletedExecIds = Array.from(new Set([...(state._meta.deletedExecIds || []), x.id]));
-      });
-
-      try{
-        await deleteAllApartmentDocsForObra(obraId);
-      }catch(e){
-        console.warn("Falha ao excluir apartments da obra:", e);
-      }
-
-      state.users = state.users.filter(x => !(x.role==="execucao" && (x.obraIds || []).includes(obraId)));
-      delete state.obras[obraId];
-      state.obras_index = state.obras_index.filter(x => x.id !== obraId);
-      state.last_obras_refresh = new Date().toISOString();
-
-      saveState();
-      toast("Obra excluída");
-      goto("home");
-    };
-  }
-}
-
-// ---------- Block ----------
-function renderBlock(u, obraId, blockId){
-  const obra = state.obras[obraId];
-  const block = (obra && obra.blocks) ? obra.blocks[blockId] : null;
-  if(!obra || !block || !canSeeObra(u, obraId)) return renderForbidden();
-
-  const nums = aptNumsForBlock(obra, block);
-
-  const cards = nums.map(n=>{
-    const a = getApartmentView(obraId, blockId, n);
-    const st = apartmentStatus(a);
-
-    const extra =
-      st==="sem_vistoria" ? "card-apt--sem" :
-      st==="pendente" ? "card-apt--pend" :
-      st==="feito" ? "card-apt--feito" :
-      st==="concluido" ? "card-apt--conc" :
-      "card-apt--conf";
-
-    const label =
-      st==="sem_vistoria" ? "Sem vistoria" :
-      st==="pendente" ? "Com pendências" :
-      st==="feito" ? "Aguardando qualidade" :
-      st==="concluido" ? "Concluído" :
-      "Conferido";
-
-    return `
-      <button class="card apt-card ${extra} js-open-apt" data-apt="${esc(n)}">
-        <div class="apt-card__num">${esc(n)}</div>
-        <div class="apt-card__status">${label}</div>
-      </button>
-    `;
-  }).join("");
-
-  return `
-  <div class="shell">
-    ${topbar(`${esc(obra.name)} · ${esc(block.id)}`, "Selecione um apartamento", `
-      <button class="btn" id="btnBackObra">Voltar</button>
-      <button class="btn js-logout">Sair</button>
-    `)}
-    <div class="content">
-      <div class="grid grid--apt">${cards}</div>
-    </div>
-  </div>`;
-}
-
-function bindBlock(u, obraId, blockId){
-  const btnBack = $("#btnBackObra");
-  if(btnBack) btnBack.onclick = ()=> goto("obra", { obraId });
-
-  $$(".js-open-apt").forEach(b=>{
-    b.onclick = ()=> goto("apt", { obraId, blockId, aptNum: b.dataset.apt });
-  });
-}
-
-// ---------- Apartment ----------
-function renderApartment(u, obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  const block = (obra && obra.blocks) ? obra.blocks[blockId] : null;
-  const apt = getApartmentView(obraId, blockId, aptNum);
-  if(!obra || !block || !apt || !canSeeObra(u, obraId)) return renderForbidden();
-
-  const tabs = `
-    <div class="tabs">
-      <button class="tab ${routes.tab==="pendencias" ? "is-active" : ""}" data-tab="pendencias">Pendências</button>
-      <button class="tab ${routes.tab==="fotos" ? "is-active" : ""}" data-tab="fotos">Fotos</button>
-    </div>`;
-
-  const body = routes.tab==="fotos"
-    ? renderAptPhotos(u, obraId, blockId, aptNum, apt)
-    : renderAptPendencias(u, obraId, blockId, aptNum, apt);
-
-  return `
-  <div class="shell">
-    ${topbar(`${esc(obra.name)} · ${esc(block.id)} · Apto ${esc(apt.num)}`, "", `
-      <button class="btn" id="btnBackBlock">Voltar</button>
-      <button class="btn js-logout">Sair</button>
-    `)}
-    <div class="content">
-      ${tabs}
-      ${body}
-    </div>
-  </div>`;
-}
-
-function renderAptPendencias(u, obraId, blockId, aptNum, apt){
-  const canCreate = u.role==="qualidade" || u.role==="supervisor";
-  const canDo = u.role==="execucao";
-  const canDeleteOwn = u.role==="qualidade" || u.role==="supervisor";
-  const canSupervisorDelete = u.role==="supervisor";
-
-  const list = (apt.pendencias || [])
-    .slice()
-    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
-    .map(p=>{
-      const badge =
-        p.state==="pendente" ? `<span class="badge badge--pend">Pendente</span>` :
-        p.state==="feito" ? `<span class="badge badge--feito">Aguardando qualidade</span>` :
-        p.state==="concluido" ? `<span class="badge badge--conc">Concluído</span>` :
-        `<span class="badge badge--conf">Conferido</span>`;
-
-      const photos = (p.photos || []).map(ph => `
-        <a class="photo-thumb" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
-          <img src="${esc(ph.dataUrl || "")}" alt="foto"/>
-        </a>`).join("");
-
-      let actions = "";
-
-      if(canDo && p.state==="pendente"){
-        actions += `<button class="btn btn--primary js-mark-done" data-p="${esc(p.id)}">Marcar como feito</button>`;
-      }
-      if(canDo && p.state==="feito"){
-        actions += `<button class="btn js-undo-done" data-p="${esc(p.id)}">Desfazer feito</button>`;
-      }
-      if(canQualityReview(u) && p.state==="feito"){
-        actions += `
-          <button class="btn btn--primary js-quality-ok" data-p="${esc(p.id)}">Aprovar</button>
-          <button class="btn btn--danger js-quality-no" data-p="${esc(p.id)}">Reprovar</button>
-        `;
-      }
-      if(canSupervisorReview(u) && p.state==="conferido"){
-        actions += `
-          <button class="btn btn--primary js-supervisor-ok" data-p="${esc(p.id)}">Aprovar</button>
-          <button class="btn btn--danger js-supervisor-no" data-p="${esc(p.id)}">Reprovar</button>
-        `;
-      }
-      if((canDeleteOwn && p.createdBy && p.createdBy.id===u.id) || canSupervisorDelete){
-        actions += `<button class="btn btn--danger js-del-pend" data-p="${esc(p.id)}">Excluir</button>`;
-      }
-
-      return `
-        <div class="card pend-card">
-          <div class="row" style="justify-content:space-between; gap:8px; align-items:flex-start">
-            <div>
-              <div class="strong">${esc(p.title)}</div>
-              <div class="small">${esc(p.category || "-")} · ${esc(p.location || "-")}</div>
-              <div class="small">Criada por ${esc((p.createdBy && p.createdBy.name) || "-")} em ${fmtDT(p.createdAt)}</div>
-              ${p.doneAt ? `<div class="small">Feita por ${esc((p.doneBy && p.doneBy.name) || "-")} em ${fmtDT(p.doneAt)}</div>` : ``}
-              ${p.qualityReviewedAt ? `<div class="small">Qualidade aprovou em ${fmtDT(p.qualityReviewedAt)}</div>` : ``}
-              ${p.supervisorReviewedAt ? `<div class="small">Supervisor aprovou em ${fmtDT(p.supervisorReviewedAt)}</div>` : ``}
-              ${p.rejection ? `<div class="small">Motivo: ${esc(p.rejection)}</div>` : ``}
-            </div>
-            ${badge}
-          </div>
-          ${photos ? `<div class="photo-grid" style="margin-top:12px">${photos}</div>` : ``}
-          ${actions ? `<div class="row" style="gap:8px; margin-top:12px; flex-wrap:wrap">${actions}</div>` : ``}
-        </div>
-      `;
-    }).join("");
-
-  const form = canCreate ? `
-    <div class="card">
-      <div class="h1">Nova pendência</div>
-      <div class="form grid2">
-        <div>
-          <label>Título</label>
-          <input id="pendTitle" placeholder="Ex.: Porta riscada" />
-        </div>
-        <div>
-          <label>Categoria</label>
-          <input id="pendCategory" placeholder="Ex.: Esquadria" />
-        </div>
-        <div style="grid-column:1/-1">
-          <label>Local</label>
-          <input id="pendLocation" placeholder="Ex.: Quarto 02" />
-        </div>
-        <div style="grid-column:1/-1">
-          <label>Fotos</label>
-          <input id="pendPhotos" type="file" accept="image/*" multiple />
-        </div>
-        <div style="grid-column:1/-1">
-          <button class="btn btn--primary" id="btnAddPend">Adicionar pendência</button>
-        </div>
-      </div>
-    </div>` : ``;
-
-  return `
-    ${form}
-    <div class="stack" style="margin-top:16px">${list || `<div class="card"><div class="small">Sem pendências</div></div>`}</div>
-  `;
-}
-
-function renderAptPhotos(u, obraId, blockId, aptNum, apt){
-  const canUpload = u.role==="qualidade" || u.role==="supervisor";
-
-  const photos = (apt.photos || [])
-    .slice()
-    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
-    .map(ph=>`
-      <div class="card">
-        <a class="photo-thumb photo-thumb--big" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
-          <img src="${esc(ph.dataUrl || "")}" alt="foto apartamento"/>
-        </a>
-        <div class="small" style="margin-top:8px">${fmtDT(ph.createdAt)} · ${esc((ph.createdBy && ph.createdBy.name) || "-")}</div>
-        ${u.role==="qualidade" || u.role==="supervisor"
-          ? `<div class="row" style="margin-top:8px"><button class="btn btn--danger js-del-apt-photo" data-ph="${esc(ph.id)}">Excluir</button></div>`
-          : ``}
-      </div>
-    `).join("");
-
-  return `
-    ${canUpload ? `
-      <div class="card">
-        <div class="h1">Adicionar foto do apartamento</div>
-        <div class="form">
-          <input id="aptPhotos" type="file" accept="image/*" multiple />
-          <button class="btn btn--primary" id="btnAddAptPhotos">Enviar fotos</button>
-        </div>
-      </div>
-    ` : ``}
-    <div class="stack" style="margin-top:16px">${photos || `<div class="card"><div class="small">Sem fotos</div></div>`}</div>
-  `;
-}
-
-function bindUsers(u){
-  const obraSel = $("#newUserObra");
-  const obras = visibleObrasFor(u);
-  obraSel.innerHTML = obras.map(o=> `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
-
-  const btnAddSup = $("#btnAddSup");
-  if(btnAddSup){
-    btnAddSup.onclick = ()=>{
-      const name = prompt("Nome do supervisor:");
-      if(!name) return;
-      const id = slugify(prompt("Usuário (id):") || "");
-      if(!id) return toast("Informe um id válido");
-      const pin = (prompt("PIN:") || "").trim();
-      if(!pin) return toast("Informe um PIN");
-      if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
-
-      state.users.push({
-        id, name, role:"supervisor", pin,
-        obraIds:["*"], active:true, cityScope:"*"
-      });
-      saveState();
-      render();
-      toast("Supervisor criado");
-    };
-  }
-
-  $("#btnCreateUser").onclick = ()=>{
-    const name = ($("#newUserName").value || "").trim();
-    const id = slugify(($("#newUserId").value || "").trim());
-    const pin = ($("#newUserPin").value || "").trim();
-    const role = ($("#newUserRole").value || "").trim();
-    const obraId = ($("#newUserObra").value || "").trim();
-
-    if(!name || !id || !pin) return toast("Preencha nome, usuário e PIN");
-    if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
-    if(role !== "execucao") return toast("Só é permitido criar login de execução aqui");
-    if(!state.obras[obraId]) return toast("Selecione uma obra válida");
-
-    state.users.push({
-      id, name, role, pin,
-      obraIds:[obraId],
-      active:true
-    });
-    saveState();
-    render();
-    toast("Login criado");
-  };
-
-  $$(".js-del-user").forEach(b=>{
-    b.onclick = ()=>{
-      const id = b.dataset.user;
-      const user = state.users.find(x=>x.id===id);
-      if(!user) return;
-      if(!confirm(`Excluir o login "${user.name}"?`)) return;
-      state.users = state.users.filter(x=>x.id!==id);
-      saveState();
-      render();
-      toast("Login excluído");
-    };
-  });
-}
-
 function bindCreateObra(u){
   $("#btnCreateObraNow").onclick = async ()=>{
     const name = ($("#obraName").value || "").trim();
@@ -1716,19 +1373,44 @@ function bindCreateObra(u){
   };
 }
 
-function bindHome(u){
-  const btnUsers = $("#btnUsers");
-  if(btnUsers) btnUsers.onclick = ()=> goto("users");
+// ---------- Obra ----------
+function renderObra(u, obraId){
+  const obra = state.obras[obraId];
+  if(!obra || !canSeeObra(u, obraId)) return renderForbidden();
 
-  const btnCreateObra = $("#btnCreateObra");
-  if(btnCreateObra) btnCreateObra.onclick = ()=> goto("createObra");
+  const blocks = Object.values(obra.blocks || {})
+    .sort((a,b)=> Number(String(a.id).replace(/\D/g,"")) - Number(String(b.id).replace(/\D/g,"")))
+    .map(b=>{
+      const c = blockCounters(obra, b);
+      return `
+        <button class="card block-card js-open-block" data-block="${esc(b.id)}">
+          <div class="block-card__title">${esc(b.id)}</div>
+          <div class="obra-stats">
+            <span class="stat stat--sem">Sem vist.: ${c.semVist}</span>
+            <span class="stat stat--pend">Pend.: ${c.pend}</span>
+            <span class="stat stat--feito">Feito: ${c.feito}</span>
+            <span class="stat stat--conf">Conf.: ${c.conferido}</span>
+            <span class="stat stat--repr">Repr.: ${c.reprov}</span>
+          </div>
+        </button>
+      `;
+    }).join("");
 
-  const btnHistory = $("#btnHistory");
-  if(btnHistory) btnHistory.onclick = ()=> goto("history");
+  const deleteBtn = canManageObras(u)
+    ? `<button class="btn btn--subtle-danger btn--small" id="btnDeleteObra">Excluir obra</button>`
+    : ``;
 
-  $$(".js-open-obra").forEach(b=>{
-    b.onclick = ()=> goto("obra", { obraId: b.dataset.obra });
-  });
+  return `
+  <div class="shell">
+    ${topbar(esc(obra.name), `${obra.city==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} · ${obra.config?.numBlocks || 0} blocos`, `
+      <button class="btn js-home">Voltar</button>
+      ${deleteBtn}
+      <button class="btn js-logout">Sair</button>
+    `)}
+    <div class="content">
+      <div class="grid grid--block">${blocks}</div>
+    </div>
+  </div>`;
 }
 
 function bindObra(u, obraId){
@@ -1757,7 +1439,11 @@ function bindObra(u, obraId){
         state._meta.deletedExecIds = Array.from(new Set([...(state._meta.deletedExecIds || []), x.id]));
       });
 
-      try{ await deleteAllApartmentDocsForObra(obraId); }catch(e){ console.warn(e); }
+      try{
+        await deleteAllApartmentDocsForObra(obraId);
+      }catch(e){
+        console.warn("Falha ao excluir apartments da obra:", e);
+      }
 
       state.users = state.users.filter(x => !(x.role==="execucao" && (x.obraIds || []).includes(obraId)));
       delete state.obras[obraId];
@@ -1771,6 +1457,52 @@ function bindObra(u, obraId){
   }
 }
 
+// ---------- Block ----------
+function renderBlock(u, obraId, blockId){
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  if(!obra || !block || !canSeeObra(u, obraId)) return renderForbidden();
+
+  const nums = aptNumsForBlock(obra, block);
+
+  const cards = nums.map(n=>{
+    const a = getApartmentView(obraId, blockId, n);
+    const st = apartmentStatus(a);
+
+    const extra =
+      st==="sem_vistoria" ? "card-apt--sem" :
+      st==="pendente" ? "card-apt--pend" :
+      st==="feito" ? "card-apt--feito" :
+      st==="reprovado" ? "card-apt--repr" :
+      "card-apt--conf";
+
+    const label =
+      st==="sem_vistoria" ? "Sem vistoria" :
+      st==="pendente" ? "Com pendências" :
+      st==="feito" ? "Aguardando conferência" :
+      st==="reprovado" ? "Reprovado" :
+      "Concluído";
+
+    return `
+      <button class="card apt-card ${extra} js-open-apt" data-apt="${esc(n)}">
+        <div class="apt-card__num">${esc(n)}</div>
+        <div class="apt-card__status">${label}</div>
+      </button>
+    `;
+  }).join("");
+
+  return `
+  <div class="shell">
+    ${topbar(`${esc(obra.name)} · ${esc(block.id)}`, "Selecione um apartamento", `
+      <button class="btn" id="btnBackObra">Voltar</button>
+      <button class="btn js-logout">Sair</button>
+    `)}
+    <div class="content">
+      <div class="grid grid--apt">${cards}</div>
+    </div>
+  </div>`;
+}
+
 function bindBlock(u, obraId, blockId){
   const btnBack = $("#btnBackObra");
   if(btnBack) btnBack.onclick = ()=> goto("obra", { obraId });
@@ -1778,6 +1510,161 @@ function bindBlock(u, obraId, blockId){
   $$(".js-open-apt").forEach(b=>{
     b.onclick = ()=> goto("apt", { obraId, blockId, aptNum: b.dataset.apt });
   });
+}
+
+// ---------- Apartment ----------
+function renderApartment(u, obraId, blockId, aptNum){
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  const apt = getApartmentView(obraId, blockId, aptNum);
+  if(!obra || !block || !apt || !canSeeObra(u, obraId)) return renderForbidden();
+
+  const tabs = `
+    <div class="tabs">
+      <button class="tab ${routes.tab==="pendencias" ? "is-active" : ""}" data-tab="pendencias">Pendências</button>
+      <button class="tab ${routes.tab==="fotos" ? "is-active" : ""}" data-tab="fotos">Fotos</button>
+    </div>`;
+
+  const body = routes.tab==="fotos"
+    ? renderAptPhotos(u, obraId, blockId, aptNum, apt)
+    : renderAptPendencias(u, obraId, blockId, aptNum, apt);
+
+  return `
+  <div class="shell">
+    ${topbar(`${esc(obra.name)} · ${esc(block.id)} · Apto ${esc(apt.num)}`, "", `
+      <button class="btn" id="btnBackBlock">Voltar</button>
+      <button class="btn js-logout">Sair</button>
+    `)}
+    <div class="content">
+      ${tabs}
+      ${body}
+    </div>
+  </div>`;
+}
+
+function renderAptPendencias(u, obraId, blockId, aptNum, apt){
+  const canCreate = u.role==="qualidade" || u.role==="supervisor";
+  const canDo = u.role==="execucao";
+  const canDeleteOwn = u.role==="qualidade" || u.role==="supervisor";
+  const canSupervisorDelete = u.role==="supervisor";
+
+  const list = (apt.pendencias || [])
+    .slice()
+    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
+    .map(p=>{
+      const badge =
+        p.state==="pendente" ? `<span class="badge badge--pend">Pendente</span>` :
+        p.state==="feito" ? `<span class="badge badge--feito">Aguardando conferência</span>` :
+        p.state==="reprovado" ? `<span class="badge badge--repr">Reprovado</span>` :
+        `<span class="badge badge--conf">Conferido</span>`;
+
+      const photos = (p.photos || []).map(ph => `
+        <a class="photo-thumb" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
+          <img src="${esc(ph.dataUrl || "")}" alt="foto"/>
+        </a>`).join("");
+
+      let actions = "";
+
+      if(canDo && p.state==="pendente"){
+        actions += `<button class="btn btn--primary js-mark-done" data-p="${esc(p.id)}">Marcar como feito</button>`;
+      }
+      if(canDo && p.state==="feito"){
+        actions += `<button class="btn js-undo-done" data-p="${esc(p.id)}">Desfazer feito</button>`;
+      }
+      if(canReview(u) && p.state==="feito"){
+        actions += `
+          <button class="btn btn--primary js-review-ok" data-p="${esc(p.id)}">Conferir</button>
+          <button class="btn btn--danger js-review-no" data-p="${esc(p.id)}">Reprovar</button>
+        `;
+      }
+      if(canDo && p.state==="reprovado"){
+        actions += `<button class="btn btn--primary js-rework" data-p="${esc(p.id)}">Marcar retrabalho como feito</button>`;
+      }
+      if((canDeleteOwn && p.createdBy?.id===u.id) || canSupervisorDelete){
+        actions += `<button class="btn btn--danger js-del-pend" data-p="${esc(p.id)}">Excluir</button>`;
+      }
+
+      return `
+        <div class="card pend-card">
+          <div class="row" style="justify-content:space-between; gap:8px; align-items:flex-start">
+            <div>
+              <div class="strong">${esc(p.title)}</div>
+              <div class="small">${esc(p.category || "-")} · ${esc(p.location || "-")}</div>
+              <div class="small">Criada por ${esc(p.createdBy?.name || "-")} em ${fmtDT(p.createdAt)}</div>
+              ${p.doneAt ? `<div class="small">Feita por ${esc(p.doneBy?.name || "-")} em ${fmtDT(p.doneAt)}</div>` : ``}
+              ${p.reviewedAt ? `<div class="small">${p.state==="conferido" ? "Conferida" : "Reprovada"} por ${esc(p.reviewedBy?.name || "-")} em ${fmtDT(p.reviewedAt)}</div>` : ``}
+              ${p.rejection ? `<div class="small">Motivo: ${esc(p.rejection)}</div>` : ``}
+            </div>
+            ${badge}
+          </div>
+          ${photos ? `<div class="photo-grid" style="margin-top:12px">${photos}</div>` : ``}
+          ${actions ? `<div class="row" style="gap:8px; margin-top:12px; flex-wrap:wrap">${actions}</div>` : ``}
+        </div>
+      `;
+    }).join("");
+
+  const form = canCreate ? `
+    <div class="card">
+      <div class="h1">Nova pendência</div>
+      <div class="form grid2">
+        <div>
+          <label>Título</label>
+          <input id="pendTitle" placeholder="Ex.: Porta riscada" />
+        </div>
+        <div>
+          <label>Categoria</label>
+          <input id="pendCategory" placeholder="Ex.: Esquadria" />
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Local</label>
+          <input id="pendLocation" placeholder="Ex.: Quarto 02" />
+        </div>
+        <div style="grid-column:1/-1">
+          <label>Fotos</label>
+          <input id="pendPhotos" type="file" accept="image/*" multiple />
+        </div>
+        <div style="grid-column:1/-1">
+          <button class="btn btn--primary" id="btnAddPend">Adicionar pendência</button>
+        </div>
+      </div>
+    </div>` : ``;
+
+  return `
+    ${form}
+    <div class="stack" style="margin-top:16px">${list || `<div class="card"><div class="small">Sem pendências</div></div>`}</div>
+  `;
+}
+
+function renderAptPhotos(u, obraId, blockId, aptNum, apt){
+  const canUpload = u.role==="qualidade" || u.role==="supervisor";
+
+  const photos = (apt.photos || [])
+    .slice()
+    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
+    .map(ph=>`
+      <div class="card">
+        <a class="photo-thumb photo-thumb--big" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
+          <img src="${esc(ph.dataUrl || "")}" alt="foto apartamento"/>
+        </a>
+        <div class="small" style="margin-top:8px">${fmtDT(ph.createdAt)} · ${esc(ph.createdBy?.name || "-")}</div>
+        ${u.role==="qualidade" || u.role==="supervisor"
+          ? `<div class="row" style="margin-top:8px"><button class="btn btn--danger js-del-apt-photo" data-ph="${esc(ph.id)}">Excluir</button></div>`
+          : ``}
+      </div>
+    `).join("");
+
+  return `
+    ${canUpload ? `
+      <div class="card">
+        <div class="h1">Adicionar foto do apartamento</div>
+        <div class="form">
+          <input id="aptPhotos" type="file" accept="image/*" multiple />
+          <button class="btn btn--primary" id="btnAddAptPhotos">Enviar fotos</button>
+        </div>
+      </div>
+    ` : ``}
+    <div class="stack" style="margin-top:16px">${photos || `<div class="card"><div class="small">Sem fotos</div></div>`}</div>
+  `;
 }
 
 function bindApartment(u, obraId, blockId, aptNum){
@@ -1829,10 +1716,6 @@ function bindApartment(u, obraId, blockId, aptNum){
         createdBy: { id:u.id, name:u.name, role:u.role },
         doneAt: null,
         doneBy: null,
-        qualityReviewedAt: null,
-        qualityReviewedBy: null,
-        supervisorReviewedAt: null,
-        supervisorReviewedBy: null,
         reviewedAt: null,
         reviewedBy: null,
         rejection: null,
@@ -1908,10 +1791,6 @@ function bindApartment(u, obraId, blockId, aptNum){
       p.state = "pendente";
       p.doneAt = null;
       p.doneBy = null;
-      p.qualityReviewedAt = null;
-      p.qualityReviewedBy = null;
-      p.supervisorReviewedAt = null;
-      p.supervisorReviewedBy = null;
       p.reviewedAt = null;
       p.reviewedBy = null;
       p.rejection = null;
@@ -1922,33 +1801,27 @@ function bindApartment(u, obraId, blockId, aptNum){
     };
   });
 
-  $$(".js-quality-ok").forEach(b=>{
+  $$(".js-review-ok").forEach(b=>{
     b.onclick = async ()=>{
       const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
       if(!p) return;
       p.state = "conferido";
-      p.qualityReviewedAt = new Date().toISOString();
-      p.qualityReviewedBy = { id:u.id, name:u.name, role:u.role };
-      p.reviewedAt = p.qualityReviewedAt;
-      p.reviewedBy = p.qualityReviewedBy;
+      p.reviewedAt = new Date().toISOString();
+      p.reviewedBy = { id:u.id, name:u.name, role:u.role };
       p.rejection = null;
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
-      toast("Pendência conferida pela qualidade");
+      toast("Pendência conferida");
     };
   });
 
-  $$(".js-quality-no").forEach(b=>{
+  $$(".js-review-no").forEach(b=>{
     b.onclick = async ()=>{
       const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
       if(!p) return;
       const reason = prompt("Motivo da reprovação:") || "";
-      p.state = "pendente";
-      p.qualityReviewedAt = null;
-      p.qualityReviewedBy = null;
-      p.supervisorReviewedAt = null;
-      p.supervisorReviewedBy = null;
+      p.state = "reprovado";
       p.reviewedAt = new Date().toISOString();
       p.reviewedBy = { id:u.id, name:u.name, role:u.role };
       p.rejection = reason.trim();
@@ -1956,43 +1829,7 @@ function bindApartment(u, obraId, blockId, aptNum){
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
-      toast("Pendência reprovada pela qualidade");
-    };
-  });
-
-  $$(".js-supervisor-ok").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
-      if(!p) return;
-      p.state = "concluido";
-      p.supervisorReviewedAt = new Date().toISOString();
-      p.supervisorReviewedBy = { id:u.id, name:u.name, role:u.role };
-      p.reviewedAt = p.supervisorReviewedAt;
-      p.reviewedBy = p.supervisorReviewedBy;
-      p.rejection = null;
-      try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
-      saveState();
-      render();
-      toast("Pendência concluída pelo supervisor");
-    };
-  });
-
-  $$(".js-supervisor-no").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
-      if(!p) return;
-      const reason = prompt("Motivo da reprovação:") || "";
-      p.state = "pendente";
-      p.supervisorReviewedAt = null;
-      p.supervisorReviewedBy = null;
-      p.reviewedAt = new Date().toISOString();
-      p.reviewedBy = { id:u.id, name:u.name, role:u.role };
-      p.rejection = reason.trim();
-      p.reopenedAt = new Date().toISOString();
-      try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
-      saveState();
-      render();
-      toast("Pendência reprovada pelo supervisor");
+      toast("Pendência reprovada");
     };
   });
 
@@ -2003,10 +1840,6 @@ function bindApartment(u, obraId, blockId, aptNum){
       p.state = "feito";
       p.doneAt = new Date().toISOString();
       p.doneBy = { id:u.id, name:u.name, role:u.role };
-      p.qualityReviewedAt = null;
-      p.qualityReviewedBy = null;
-      p.supervisorReviewedAt = null;
-      p.supervisorReviewedBy = null;
       p.reviewedAt = null;
       p.reviewedBy = null;
       p.rejection = null;
@@ -2021,7 +1854,7 @@ function bindApartment(u, obraId, blockId, aptNum){
     b.onclick = async ()=>{
       const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
       if(!p) return;
-      if(!(u.role==="supervisor" || ((u.role==="qualidade" || u.role==="supervisor") && p.createdBy && p.createdBy.id===u.id))){
+      if(!(u.role==="supervisor" || ((u.role==="qualidade" || u.role==="supervisor") && p.createdBy?.id===u.id))){
         return toast("Você não pode excluir esta pendência");
       }
       if(!confirm("Excluir esta pendência?")) return;
@@ -2055,7 +1888,6 @@ function renderHistory(u){
           <button class="btn ${filter==="Criada" ? "btn--primary" : ""} js-hf" data-f="Criada">Criadas</button>
           <button class="btn ${filter==="Feita" ? "btn--primary" : ""} js-hf" data-f="Feita">Feitas</button>
           <button class="btn ${filter==="Conferida" ? "btn--primary" : ""} js-hf" data-f="Conferida">Conferidas</button>
-          <button class="btn ${filter==="Concluída" ? "btn--primary" : ""} js-hf" data-f="Concluída">Concluídas</button>
           <button class="btn ${filter==="Reprovada" ? "btn--primary" : ""} js-hf" data-f="Reprovada">Reprovadas</button>
         </div>
       </div>
@@ -2235,7 +2067,6 @@ function renderForbidden(){
   .stat--feito{border-color:#1d4ed8;background:#102a56}
   .stat--conf{border-color:#166534;background:#0f2a1c}
   .stat--repr{border-color:#991b1b;background:#3b0c0c}
-  .stat--conc{border-color:#0f766e;background:#113a37}
   .badge{
     font-size:12px;
     padding:6px 10px;
@@ -2247,7 +2078,6 @@ function renderForbidden(){
   .badge--feito{border-color:#1d4ed8;background:#102a56}
   .badge--conf{border-color:#166534;background:#0f2a1c}
   .badge--repr{border-color:#991b1b;background:#3b0c0c}
-  .badge--conc{border-color:#0f766e;background:#113a37}
   .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
   .tab{
     padding:10px 14px;
@@ -2299,7 +2129,6 @@ function renderForbidden(){
   .card-apt--feito{background:#14263f;border-color:#274c7a}
   .card-apt--conf{background:#163222;border-color:#2a6b46}
   .card-apt--repr{background:#3a1616;border-color:#8b2b2b}
-  .card-apt--conc{background:#123734;border-color:#1f7a73}
   #toast{
     position:fixed;
     left:50%;
