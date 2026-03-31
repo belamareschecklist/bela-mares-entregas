@@ -1,11 +1,27 @@
-const APP_VERSION = "live-sync-v3";
-const STATE_VERSION = 30;
+const APP_VERSION = "live-sync-v4-mobileflow";
+const STATE_VERSION = 31;
 
 /* Bela Mares — Checklist */
-/* Base com Firebase compat e sync ao vivo restaurado */
+/* Compatibilidade mobile + fluxo Qualidade -> Supervisor */
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
+const SESSION_KEY = "bm_checklist_session_user";
+const APP_VERSION_KEY = "bm_checklist_app_version";
+
 let localSaveDisabled = false;
+
+(function ensureVersionReset(){
+  try{
+    const current = localStorage.getItem(APP_VERSION_KEY) || "";
+    if(current !== APP_VERSION){
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.setItem(APP_VERSION_KEY, APP_VERSION);
+    }
+  }catch(e){
+    console.warn("Falha ao validar versão local:", e);
+  }
+})();
 
 function safeSetItem(key, value){
   if(localSaveDisabled) return;
@@ -21,13 +37,15 @@ function safeSetItem(key, value){
 function stripLargeFields(obj){
   if(!obj || typeof obj !== "object") return;
   if(Array.isArray(obj)){
-    for(const it of obj) stripLargeFields(it);
+    for(var i=0;i<obj.length;i++) stripLargeFields(obj[i]);
     return;
   }
-  for(const k of Object.keys(obj)){
-    const v = obj[k];
-    if(k === "dataUrl" && typeof v === "string"){
-      obj[k] = null;
+  var keys = Object.keys(obj);
+  for(var k=0;k<keys.length;k++){
+    var key = keys[k];
+    var v = obj[key];
+    if(key === "dataUrl" && typeof v === "string"){
+      obj[key] = null;
       continue;
     }
     stripLargeFields(v);
@@ -35,12 +53,11 @@ function stripLargeFields(obj){
 }
 
 function persistableStateForLocal(){
-  const s = persistableState();
+  var s = persistableState();
   try{ stripLargeFields(s); }catch(_){}
   return s;
 }
 
-const SESSION_KEY = "bm_checklist_session_user";
 function getSessionUserId(){
   try{ return (localStorage.getItem(SESSION_KEY) || "").trim().toLowerCase(); }catch(e){ return ""; }
 }
@@ -54,28 +71,30 @@ function setSessionUserId(id){
   }catch(e){}
 }
 
-const $ = (sel, root=document) => root.querySelector(sel);
-const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+var $ = function(sel, root){ return (root || document).querySelector(sel); };
+var $$ = function(sel, root){ return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
-const toastEl = () => $("#toast");
-let toastTimer = null;
+function toastEl(){ return $("#toast"); }
+var toastTimer = null;
 function toast(msg){
-  const el = toastEl();
+  var el = toastEl();
   if(!el) return;
   el.textContent = msg;
   el.style.display = "block";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
+  toastTimer = setTimeout(function(){ el.style.display="none"; }, 2600);
 }
 
 function esc(s){
-  return String(s || "").replace(/[&<>"']/g, c => ({
-    "&":"&amp;",
-    "<":"&lt;",
-    ">":"&gt;",
-    '"':"&quot;",
-    "'":"&#39;"
-  }[c]));
+  return String(s || "").replace(/[&<>"']/g, function(c){
+    return {
+      "&":"&amp;",
+      "<":"&lt;",
+      ">":"&gt;",
+      '"':"&quot;",
+      "'":"&#39;"
+    }[c];
+  });
 }
 
 function slugify(input){
@@ -92,18 +111,18 @@ function slugify(input){
 }
 
 function normalizeCity(v){
-  const s = String(v || "").trim().toLowerCase();
-  if(s.includes("aguas")) return "aguaslindas";
-  if(s.includes("águas")) return "aguaslindas";
+  var s = String(v || "").trim().toLowerCase();
+  if(s.indexOf("aguas") >= 0) return "aguaslindas";
+  if(s.indexOf("águas") >= 0) return "aguaslindas";
   return "valparaiso";
 }
 
 function fmtDT(iso){
   if(!iso) return "-";
   try{
-    const d = new Date(iso);
-    const pad = (n)=> String(n).padStart(2,"0");
-    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    var d = new Date(iso);
+    var pad = function(n){ return String(n).padStart(2,"0"); };
+    return pad(d.getDate()) + "/" + pad(d.getMonth()+1) + "/" + d.getFullYear() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }catch(e){
     return String(iso);
   }
@@ -112,44 +131,54 @@ function fmtDT(iso){
 function diffHM(aIso,bIso){
   if(!aIso || !bIso) return "-";
   try{
-    const a = new Date(aIso).getTime();
-    const b = new Date(bIso).getTime();
-    const m = Math.max(0, Math.round((b-a)/60000));
-    const h = Math.floor(m/60), mm = m % 60;
-    return `${h}h${String(mm).padStart(2,"0")}`;
+    var a = new Date(aIso).getTime();
+    var b = new Date(bIso).getTime();
+    var m = Math.max(0, Math.round((b-a)/60000));
+    var h = Math.floor(m/60), mm = m % 60;
+    return h + "h" + String(mm).padStart(2,"0");
   }catch(e){
     return "-";
   }
 }
 
 function readImageAsDataURL(file){
-  return new Promise((resolve,reject)=>{
-    const r = new FileReader();
-    r.onload = ()=> resolve(String(r.result || ""));
-    r.onerror = ()=> reject(r.error || new Error("Falha ao ler imagem"));
+  return new Promise(function(resolve,reject){
+    var r = new FileReader();
+    r.onload = function(){ resolve(String(r.result || "")); };
+    r.onerror = function(){ reject(r.error || new Error("Falha ao ler imagem")); };
     r.readAsDataURL(file);
   });
 }
 
-function uid(prefix="id"){
+function uid(prefix){
+  prefix = prefix || "id";
   return prefix + "_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
 
-const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
-const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
+var APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
+var APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
 function aptNumsByConfig(aptsPerBlock){
   return Number(aptsPerBlock) === 12 ? APT_NUMS_12 : APT_NUMS_16;
 }
 
 function aptNumsForBlock(obra, block){
-  const configured = aptNumsByConfig(obra?.config?.aptsPerBlock || 16);
-  const existing = Object.keys(block?.apartments || {}).sort((a,b)=> Number(a)-Number(b));
+  var configured = aptNumsByConfig((obra && obra.config && obra.config.aptsPerBlock) || 16);
+  var existing = Object.keys((block && block.apartments) || {}).sort(function(a,b){ return Number(a)-Number(b); });
 
   if(!existing.length) return configured;
 
-  const all = new Set([...configured, ...existing]);
-  return Array.from(all).sort((a,b)=> Number(a)-Number(b));
+  var allMap = {};
+  var out = [];
+  var i;
+  for(i=0;i<configured.length;i++){
+    if(!allMap[configured[i]]){ allMap[configured[i]] = true; out.push(configured[i]); }
+  }
+  for(i=0;i<existing.length;i++){
+    if(!allMap[existing[i]]){ allMap[existing[i]] = true; out.push(existing[i]); }
+  }
+  out.sort(function(a,b){ return Number(a)-Number(b); });
+  return out;
 }
 
 function makeEmptyApartment(num){
@@ -161,16 +190,16 @@ function makeEmptyApartment(num){
 }
 
 function getOrMakeApartment(obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
+  var obra = state.obras[obraId];
   if(!obra) return null;
 
   if(!obra.blocks) obra.blocks = {};
   if(!obra.blocks[blockId]) obra.blocks[blockId] = { id:blockId, apartments:{} };
 
-  const block = obra.blocks[blockId];
+  var block = obra.blocks[blockId];
   if(!block.apartments) block.apartments = {};
 
-  const an = String(aptNum);
+  var an = String(aptNum);
   if(!block.apartments[an]){
     block.apartments[an] = makeEmptyApartment(an);
   }
@@ -178,16 +207,16 @@ function getOrMakeApartment(obraId, blockId, aptNum){
 }
 
 function getApartmentView(obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
-  const an = String(aptNum);
-  return (block?.apartments && block.apartments[an])
+  var obra = state.obras[obraId];
+  var block = obra && obra.blocks ? obra.blocks[blockId] : null;
+  var an = String(aptNum);
+  return (block && block.apartments && block.apartments[an])
     ? block.apartments[an]
     : makeEmptyApartment(an);
 }
 
 function seed(){
-  const s = {
+  var s = {
     version: STATE_VERSION,
     session: null,
     users: [
@@ -198,7 +227,7 @@ function seed(){
       { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
       { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true, cityScope:"*" },
       { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true, cityScope:"*" },
-      { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true, cityScope:"*" },
+      { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true, cityScope:"*" }
     ],
     obras: {},
     obras_index: [],
@@ -209,31 +238,32 @@ function seed(){
     }
   };
 
-  function makeObra(id, name, numBlocks, aptsPerBlock, city="valparaiso"){
-    const blocks = {};
-    for(let b=1;b<=numBlocks;b++){
-      const bid = "B"+b;
+  function makeObra(id, name, numBlocks, aptsPerBlock, city){
+    city = city || "valparaiso";
+    var blocks = {};
+    for(var b=1;b<=numBlocks;b++){
+      var bid = "B" + b;
       blocks[bid] = { id: bid, apartments: {} };
     }
     s.obras[id] = {
-      id,
-      name,
-      city,
-      config: { numBlocks, aptsPerBlock },
-      blocks
+      id:id,
+      name:name,
+      city:city,
+      config:{ numBlocks:numBlocks, aptsPerBlock:aptsPerBlock },
+      blocks:blocks
     };
     s.obras_index.push({
-      id,
-      name,
-      city,
-      config: { numBlocks, aptsPerBlock }
+      id:id,
+      name:name,
+      city:city,
+      config:{ numBlocks:numBlocks, aptsPerBlock:aptsPerBlock }
     });
   }
 
   makeObra("costa_rica", "Costa Rica - Entregas", 17, 12, "valparaiso");
   makeObra("costa_brava", "Costa Brava - Entregas", 6, 12, "valparaiso");
 
-  const apt = getOrMakeApartment("costa_rica", "B17", "204");
+  var apt = getOrMakeApartment("costa_rica", "B17", "204");
   apt.pendencias.push({
     id: uid("p"),
     title: "Rejunte falhando",
@@ -244,10 +274,13 @@ function seed(){
     createdBy: { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade" },
     doneAt:null,
     doneBy:null,
-    reviewedAt:null,
-    reviewedBy:null,
+    qualityReviewedAt:null,
+    qualityReviewedBy:null,
+    supervisorReviewedAt:null,
+    supervisorReviewedBy:null,
     rejection:null,
-    reopenedAt:null,
+    rejectionBy:null,
+    rejectionAt:null,
     photos:[]
   });
 
@@ -266,7 +299,9 @@ function migrateState(s){
   if(!Array.isArray(s._meta.deletedObraIds)) s._meta.deletedObraIds = [];
   if(!Array.isArray(s._meta.deletedExecIds)) s._meta.deletedExecIds = [];
 
-  Object.values(s.obras).forEach(obra=>{
+  var obraKeys = Object.keys(s.obras);
+  for(var i=0;i<obraKeys.length;i++){
+    var obra = s.obras[obraKeys[i]];
     if(!obra.city) obra.city = "valparaiso";
     obra.city = normalizeCity(obra.city);
     if(!obra.config){
@@ -276,21 +311,53 @@ function migrateState(s){
       };
     }
     if(!obra.blocks) obra.blocks = {};
-    Object.values(obra.blocks).forEach(block=>{
+    var blockKeys = Object.keys(obra.blocks);
+    for(var j=0;j<blockKeys.length;j++){
+      var block = obra.blocks[blockKeys[j]];
       if(!block.apartments) block.apartments = {};
-    });
-  });
+      var aptKeys = Object.keys(block.apartments);
+      for(var k=0;k<aptKeys.length;k++){
+        var apt = block.apartments[aptKeys[k]];
+        if(!Array.isArray(apt.pendencias)) apt.pendencias = [];
+        if(!Array.isArray(apt.photos)) apt.photos = [];
+        for(var p=0;p<apt.pendencias.length;p++){
+          var pend = apt.pendencias[p];
+          if(!pend.state) pend.state = "pendente";
+          if(typeof pend.qualityReviewedAt === "undefined") pend.qualityReviewedAt = null;
+          if(typeof pend.qualityReviewedBy === "undefined") pend.qualityReviewedBy = null;
+          if(typeof pend.supervisorReviewedAt === "undefined") pend.supervisorReviewedAt = null;
+          if(typeof pend.supervisorReviewedBy === "undefined") pend.supervisorReviewedBy = null;
+          if(typeof pend.rejection === "undefined") pend.rejection = null;
+          if(typeof pend.rejectionBy === "undefined") pend.rejectionBy = null;
+          if(typeof pend.rejectionAt === "undefined") pend.rejectionAt = null;
+
+          if(pend.state === "conferido" && pend.reviewedAt && !pend.supervisorReviewedAt && pend.reviewedBy && pend.reviewedBy.role === "supervisor"){
+            pend.supervisorReviewedAt = pend.reviewedAt;
+            pend.supervisorReviewedBy = pend.reviewedBy;
+            pend.state = "concluido";
+          }else if((pend.state === "conferido" || pend.state === "reprovado") && pend.reviewedAt && !pend.qualityReviewedAt){
+            pend.qualityReviewedAt = pend.reviewedAt;
+            pend.qualityReviewedBy = pend.reviewedBy || null;
+          }
+        }
+      }
+    }
+  }
 
   s.obras_index = s.obras_index
-    .filter(x => !!x && !!x.id)
-    .map(x => ({
-      ...x,
-      city: normalizeCity(x.city || s.obras[x.id]?.city || "valparaiso"),
-      config: x.config || s.obras[x.id]?.config || { numBlocks:1, aptsPerBlock:16 }
-    }));
+    .filter(function(x){ return !!x && !!x.id; })
+    .map(function(x){
+      return {
+        id:x.id,
+        name:x.name,
+        city: normalizeCity(x.city || (s.obras[x.id] && s.obras[x.id].city) || "valparaiso"),
+        config: x.config || (s.obras[x.id] && s.obras[x.id].config) || { numBlocks:1, aptsPerBlock:16 }
+      };
+    });
 
-  s.users = s.users.map(u=>{
-    const next = { ...u };
+  s.users = s.users.map(function(u){
+    var next = {};
+    for(var key in u) next[key] = u[key];
     if(typeof next.active !== "boolean") next.active = true;
     if(!Array.isArray(next.obraIds)) next.obraIds = [];
     if(next.role === "qualidade"){
@@ -298,7 +365,7 @@ function migrateState(s){
       else if(next.id === "qualidade_aguaslindas") next.cityScope = "aguaslindas";
       else next.cityScope = next.cityScope || "*";
     }
-    if(["supervisor","coordenador","engenheiro","diretor"].includes(next.role)){
+    if(["supervisor","coordenador","engenheiro","diretor"].indexOf(next.role) >= 0){
       next.cityScope = "*";
     }
     return next;
@@ -310,9 +377,9 @@ function migrateState(s){
 
 function loadState(){
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
+    var raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
-    const parsed = JSON.parse(raw);
+    var parsed = JSON.parse(raw);
     if(!parsed || !parsed.version) return seed();
     if(parsed.session) delete parsed.session;
     return migrateState(parsed);
@@ -321,12 +388,12 @@ function loadState(){
   }
 }
 
-let state = loadState();
+var state = loadState();
 
 function ensureSystemDefaults(){
   state = migrateState(state);
 
-  const fixed = [
+  var fixed = [
     { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true, cityScope:"*" },
     { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:[], active:true, cityScope:"valparaiso" },
     { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:[], active:true, cityScope:"aguaslindas" },
@@ -335,13 +402,24 @@ function ensureSystemDefaults(){
     { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true, cityScope:"*" }
   ];
 
-  fixed.forEach(f=>{
-    const i = state.users.findIndex(u=>u.id===f.id);
-    if(i < 0) state.users.push(f);
-    else state.users[i] = { ...f, ...state.users[i], role:f.role, active:true, cityScope:f.cityScope };
-  });
+  for(var i=0;i<fixed.length;i++){
+    var f = fixed[i];
+    var idx = state.users.findIndex(function(u){ return u.id === f.id; });
+    if(idx < 0) state.users.push(f);
+    else state.users[idx] = {
+      id:f.id,
+      name:state.users[idx].name || f.name,
+      role:f.role,
+      pin:state.users[idx].pin || f.pin,
+      obraIds:state.users[idx].obraIds || f.obraIds,
+      active:true,
+      cityScope:f.cityScope
+    };
+  }
 
-  Object.values(state.obras).forEach(obra=>{
+  var obraKeys = Object.keys(state.obras);
+  for(i=0;i<obraKeys.length;i++){
+    var obra = state.obras[obraKeys[i]];
     if(!obra.city) obra.city = "valparaiso";
     obra.city = normalizeCity(obra.city);
     if(!obra.config){
@@ -351,37 +429,45 @@ function ensureSystemDefaults(){
       };
     }
     if(!obra.blocks) obra.blocks = {};
-    const configuredBlocks = Number(obra.config.numBlocks) || 1;
-    for(let i=1;i<=configuredBlocks;i++){
-      const bid = "B" + i;
+    var configuredBlocks = Number(obra.config.numBlocks) || 1;
+    for(var n=1;n<=configuredBlocks;n++){
+      var bid = "B" + n;
       if(!obra.blocks[bid]) obra.blocks[bid] = { id:bid, apartments:{} };
       if(!obra.blocks[bid].apartments) obra.blocks[bid].apartments = {};
     }
-  });
+  }
 
-  const seen = new Set();
-  state.obras_index = [
-    ...state.obras_index.filter(x => !!x && !!x.id && !!state.obras[x.id]),
-    ...Object.values(state.obras).map(o=>({
+  var seen = {};
+  var rebuilt = [];
+  var existing = state.obras_index.filter(function(x){ return !!x && !!x.id && !!state.obras[x.id]; });
+  var fromObras = Object.keys(state.obras).map(function(id){
+    var o = state.obras[id];
+    return {
       id:o.id,
       name:o.name,
       city:o.city || "valparaiso",
       config:o.config || { numBlocks:1, aptsPerBlock:16 }
-    }))
-  ].filter(x=>{
-    if(seen.has(x.id)) return false;
-    seen.add(x.id);
-    return true;
-  }).map(x=>({
-    ...x,
-    city: normalizeCity(x.city),
-    config: x.config || state.obras[x.id]?.config || { numBlocks:1, aptsPerBlock:16 }
-  })).sort((a,b)=> a.name.localeCompare(b.name, "pt-BR"));
+    };
+  });
+  var merged = existing.concat(fromObras);
+  for(i=0;i<merged.length;i++){
+    var x = merged[i];
+    if(seen[x.id]) continue;
+    seen[x.id] = true;
+    rebuilt.push({
+      id:x.id,
+      name:x.name,
+      city:normalizeCity(x.city),
+      config:x.config || (state.obras[x.id] && state.obras[x.id].config) || { numBlocks:1, aptsPerBlock:16 }
+    });
+  }
+  rebuilt.sort(function(a,b){ return a.name.localeCompare(b.name, "pt-BR"); });
+  state.obras_index = rebuilt;
 
   try{
-    const last = getSessionUserId();
+    var last = getSessionUserId();
     if(last){
-      const u = state.users.find(x => String(x.id).toLowerCase() === last && x.active);
+      var u = state.users.find(function(x){ return String(x.id).toLowerCase() === last && x.active; });
       if(u) state.session = { userId: u.id };
       else setSessionUserId("");
     }
@@ -389,8 +475,6 @@ function ensureSystemDefaults(){
 }
 
 ensureSystemDefaults();
-
-// ---------- Firebase compat live sync ----------
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
   authDomain: "bela-mares-entregas.firebaseapp.com",
@@ -402,16 +486,16 @@ const FIREBASE_CONFIG = {
 
 const APARTMENTS_COLLECTION = "apartments";
 
-let fbApp = null;
-let fbDb = null;
-let fbReady = false;
-let fbMetaUnsub = null;
-let fbApartmentsUnsub = null;
-let saveTimer = null;
-let isApplyingRemote = false;
+var fbApp = null;
+var fbDb = null;
+var fbReady = false;
+var fbMetaUnsub = null;
+var fbApartmentsUnsub = null;
+var saveTimer = null;
+var isApplyingRemote = false;
 
 function makeAptDocId(obraId, blockId, apto){
-  return `${String(obraId)}__${String(blockId)}__${String(apto)}`;
+  return String(obraId) + "__" + String(blockId) + "__" + String(apto);
 }
 
 function ensureAptPath(obraId, blockId, apto){
@@ -441,12 +525,12 @@ function ensureAptPath(obraId, blockId, apto){
 function applyApartmentFromDoc(doc){
   try{
     if(!doc) return;
-    const obraId = doc.obraId;
-    const blockId = doc.blockId;
-    const apto = String(doc.apto || doc.aptNum || "");
+    var obraId = doc.obraId;
+    var blockId = doc.blockId;
+    var apto = String(doc.apto || doc.aptNum || "");
     if(!obraId || !blockId || !apto) return;
 
-    const target = ensureAptPath(obraId, blockId, apto);
+    var target = ensureAptPath(obraId, blockId, apto);
 
     target.num = apto;
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : [];
@@ -467,7 +551,7 @@ function applyApartmentFromDoc(doc){
 }
 
 function persistableState(){
-  const s = JSON.parse(JSON.stringify(state));
+  var s = JSON.parse(JSON.stringify(state));
   if(s && s.session) delete s.session;
   return s;
 }
@@ -490,13 +574,13 @@ function initFirestore(){
     fbDb = window.firebase.firestore();
     fbReady = true;
 
-    const metaRef = fbDb
+    var metaRef = fbDb
       .collection("apps")
       .doc("bela_mares_checklist")
       .collection("state")
       .doc("meta");
 
-    const aptsRef = fbDb
+    var aptsRef = fbDb
       .collection("apps")
       .doc("bela_mares_checklist")
       .collection(APARTMENTS_COLLECTION);
@@ -504,22 +588,22 @@ function initFirestore(){
     if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
     if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
 
-    fbMetaUnsub = metaRef.onSnapshot((snap)=>{
+    fbMetaUnsub = metaRef.onSnapshot(function(snap){
       if(!snap || !snap.exists) return;
       if(snap.metadata && snap.metadata.hasPendingWrites) return;
 
-      const data = snap.data() || {};
+      var data = snap.data() || {};
       if(!data.meta) return;
 
       try{
         isApplyingRemote = true;
-        const parsed = JSON.parse(data.meta);
+        var parsed = JSON.parse(data.meta);
         if(!parsed || typeof parsed !== "object"){
           isApplyingRemote = false;
           return;
         }
 
-        const currentSession = state?.session || null;
+        var currentSession = (state && state.session) || null;
 
         parsed.version = STATE_VERSION;
         state = migrateState(parsed);
@@ -537,25 +621,25 @@ function initFirestore(){
       }finally{
         isApplyingRemote = false;
       }
-    }, (err)=>console.warn("Meta snapshot error:", err));
+    }, function(err){ console.warn("Meta snapshot error:", err); });
 
-    fbApartmentsUnsub = aptsRef.onSnapshot((qs)=>{
+    fbApartmentsUnsub = aptsRef.onSnapshot(function(qs){
       if(!qs) return;
       if(qs.metadata && qs.metadata.hasPendingWrites) return;
 
-      let changed = false;
+      var changed = false;
 
-      qs.docChanges().forEach((ch)=>{
-        const data = ch.doc.data() || {};
-        const obraId = data.obraId;
-        const blockId = data.blockId;
-        const apto = String(data.apto || data.aptNum || "");
+      qs.docChanges().forEach(function(ch){
+        var data = ch.doc.data() || {};
+        var obraId = data.obraId;
+        var blockId = data.blockId;
+        var apto = String(data.apto || data.aptNum || "");
         if(!obraId || !blockId || !apto) return;
 
         if(ch.type === "removed"){
-          const obra = state.obras?.[obraId];
-          const block = obra?.blocks?.[blockId];
-          if(block?.apartments && block.apartments[apto]){
+          var obra = state.obras ? state.obras[obraId] : null;
+          var block = obra && obra.blocks ? obra.blocks[blockId] : null;
+          if(block && block.apartments && block.apartments[apto]){
             delete block.apartments[apto];
             changed = true;
           }
@@ -572,7 +656,7 @@ function initFirestore(){
         }catch(_){}
         render();
       }
-    }, (err)=>console.warn("Apartments snapshot error:", err));
+    }, function(err){ console.warn("Apartments snapshot error:", err); });
 
   }catch(e){
     console.warn("Falha ao iniciar Firestore:", e);
@@ -581,15 +665,15 @@ function initFirestore(){
 
 async function saveMetaToFirestore(){
   if(!fbReady || isApplyingRemote) return;
-  const now = Date.now();
+  var now = Date.now();
 
-  const metaRef = fbDb
+  var metaRef = fbDb
     .collection("apps")
     .doc("bela_mares_checklist")
     .collection("state")
     .doc("meta");
 
-  const payload = {
+  var payload = {
     updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
     updatedAtMs: now,
     meta: JSON.stringify(persistableMetaState())
@@ -601,21 +685,21 @@ async function saveMetaToFirestore(){
 async function saveApartmentDoc(obraId, blockId, apto){
   if(!fbReady || isApplyingRemote) return;
 
-  const apt = getOrMakeApartment(obraId, blockId, apto);
+  var apt = getOrMakeApartment(obraId, blockId, apto);
   if(!apt) return;
 
-  const now = Date.now();
+  var now = Date.now();
 
-  const aRef = fbDb
+  var aRef = fbDb
     .collection("apps")
     .doc("bela_mares_checklist")
     .collection(APARTMENTS_COLLECTION)
     .doc(makeAptDocId(obraId, blockId, apto));
 
-  const payload = {
-    obraId,
-    obraName: state.obras?.[obraId]?.name || obraId,
-    blockId,
+  var payload = {
+    obraId: obraId,
+    obraName: (state.obras && state.obras[obraId] && state.obras[obraId].name) || obraId,
+    blockId: blockId,
     apto: String(apto),
     pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
     photos: Array.isArray(apt.photos) ? apt.photos : [],
@@ -628,7 +712,7 @@ async function saveApartmentDoc(obraId, blockId, apto){
 
 async function deleteApartmentDoc(obraId, blockId, apto){
   if(!fbReady || isApplyingRemote) return;
-  const ref = fbDb
+  var ref = fbDb
     .collection("apps")
     .doc("bela_mares_checklist")
     .collection(APARTMENTS_COLLECTION)
@@ -643,15 +727,15 @@ async function deleteApartmentDoc(obraId, blockId, apto){
 
 async function deleteAllApartmentDocsForObra(obraId){
   if(!fbReady || isApplyingRemote) return;
-  const obra = state.obras?.[obraId];
+  var obra = state.obras ? state.obras[obraId] : null;
   if(!obra) return;
 
-  const batch = fbDb.batch();
+  var batch = fbDb.batch();
 
-  Object.values(obra.blocks || {}).forEach(block=>{
-    const nums = aptNumsForBlock(obra, block);
-    nums.forEach(apto=>{
-      const ref = fbDb
+  Object.values(obra.blocks || {}).forEach(function(block){
+    var nums = aptNumsForBlock(obra, block);
+    nums.forEach(function(apto){
+      var ref = fbDb
         .collection("apps")
         .doc("bela_mares_checklist")
         .collection(APARTMENTS_COLLECTION)
@@ -671,7 +755,7 @@ function queueSaveToFirestore(){
   if(!fbReady) return;
   if(saveTimer) clearTimeout(saveTimer);
 
-  saveTimer = setTimeout(async ()=>{
+  saveTimer = setTimeout(async function(){
     if(isApplyingRemote) return;
     try{
       await saveMetaToFirestore();
@@ -686,8 +770,7 @@ function saveState(){
   try{ queueSaveToFirestore(); }catch(_){}
 }
 
-// ---------- Auth / Roles ----------
-const ROLE_LABEL = {
+var ROLE_LABEL = {
   qualidade: "Qualidade",
   execucao: "Execução",
   supervisor: "Supervisor",
@@ -698,7 +781,7 @@ const ROLE_LABEL = {
 
 function getCurrentUser(){
   if(!state.session) return null;
-  return state.users.find(u => u.id === state.session.userId) || null;
+  return state.users.find(function(u){ return u.id === state.session.userId; }) || null;
 }
 
 function logout(){
@@ -716,24 +799,24 @@ function getUserCityScope(user){
 
 function userCanSeeCity(user, city){
   if(!user) return false;
-  const scope = getUserCityScope(user);
+  var scope = getUserCityScope(user);
   if(scope === "*" || !scope) return true;
   return scope === normalizeCity(city || "valparaiso");
 }
 
 function canSeeObra(user, obraId){
   if(!user) return false;
-  const obra = state.obras[obraId];
+  var obra = state.obras[obraId];
   if(!obra) return false;
 
-  if(["supervisor","coordenador","engenheiro","diretor"].includes(user.role)) return true;
+  if(["supervisor","coordenador","engenheiro","diretor"].indexOf(user.role) >= 0) return true;
 
   if(user.role === "qualidade"){
     return userCanSeeCity(user, obra.city);
   }
 
   if(user.role === "execucao"){
-    return (user.obraIds || []).includes(obraId);
+    return (user.obraIds || []).indexOf(obraId) >= 0;
   }
 
   return false;
@@ -742,21 +825,20 @@ function canSeeObra(user, obraId){
 function canManageUsers(user){
   return !!user && user.role === "supervisor";
 }
-
 function canCreateSupervisor(user){
   return !!user && user.role === "supervisor";
 }
-
 function canManageObras(user){
-  return !!user && ["supervisor","qualidade"].includes(user.role);
+  return !!user && ["supervisor","qualidade"].indexOf(user.role) >= 0;
 }
-
-function canReview(user){
+function canSupervisorReview(user){
   return !!user && user.role === "supervisor";
 }
+function canQualityReview(user){
+  return !!user && user.role === "qualidade";
+}
 
-// ---------- Router ----------
-const routes = {
+var routes = {
   screen:"login",
   obraId:null,
   blockId:null,
@@ -765,9 +847,10 @@ const routes = {
   historyFilter:"all"
 };
 
-function goto(screen, params={}){
+function goto(screen, params){
+  params = params || {};
   Object.assign(routes, {
-    screen,
+    screen:screen,
     obraId:null,
     blockId:null,
     aptNum:null,
@@ -777,51 +860,51 @@ function goto(screen, params={}){
   render();
 }
 
-// ---------- Derived ----------
 function visibleObrasFor(u){
-  const idx = [...(state.obras_index || [])]
-    .filter(o => !!state.obras[o.id])
-    .sort((a,b)=> a.name.localeCompare(b.name, "pt-BR"));
+  var idx = (state.obras_index || []).slice()
+    .filter(function(o){ return !!state.obras[o.id]; })
+    .sort(function(a,b){ return a.name.localeCompare(b.name, "pt-BR"); });
 
   if(!u) return [];
 
-  if(["supervisor","coordenador","engenheiro","diretor"].includes(u.role)) return idx;
+  if(["supervisor","coordenador","engenheiro","diretor"].indexOf(u.role) >= 0) return idx;
 
   if(u.role === "qualidade"){
     if(u.id === "qualidade_aguaslindas"){
-      return idx.filter(o => normalizeCity(o.city) === "aguaslindas");
+      return idx.filter(function(o){ return normalizeCity(o.city) === "aguaslindas"; });
     }
-    return idx.filter(o => normalizeCity(o.city) === "valparaiso");
+    return idx.filter(function(o){ return normalizeCity(o.city) === "valparaiso"; });
   }
 
   if(u.role === "execucao"){
-    return idx.filter(o => (u.obraIds || []).includes(o.id));
+    return idx.filter(function(o){ return (u.obraIds || []).indexOf(o.id) >= 0; });
   }
 
   return [];
 }
 
 function apartmentStatus(a){
-  const ps = a?.pendencias || [];
-  const aptPhotos = a?.photos || [];
+  var ps = (a && a.pendencias) || [];
+  var aptPhotos = (a && a.photos) || [];
 
-  const hasPendencias = ps.length > 0;
-  const hasPhotos = aptPhotos.length > 0;
+  var hasPendencias = ps.length > 0;
+  var hasPhotos = aptPhotos.length > 0;
 
-  const hasInspectionMark =
-    !!a?._meta?.synced ||
-    !!a?._meta?.updatedAtMs ||
-    !!a?.vistoriadoAt ||
-    !!a?.checkedAt ||
-    !!a?.reviewedAt ||
-    !!a?.vistoriado ||
-    a?.status === "conferido" ||
-    a?.status === "vistoriado";
+  var hasInspectionMark =
+    !!(a && a._meta && a._meta.synced) ||
+    !!(a && a._meta && a._meta.updatedAtMs) ||
+    !!(a && a.vistoriadoAt) ||
+    !!(a && a.checkedAt) ||
+    !!(a && a.reviewedAt) ||
+    !!(a && a.vistoriado) ||
+    (a && a.status === "conferido") ||
+    (a && a.status === "vistoriado") ||
+    (a && a.status === "concluido");
 
-  if(ps.some(p => p.state === "reprovado")) return "reprovado";
-  if(ps.some(p => p.state === "pendente")) return "pendente";
-  if(hasPendencias && ps.every(p => p.state === "feito")) return "feito";
-  if(hasPendencias && ps.every(p => p.state === "conferido")) return "conferido";
+  if(ps.some(function(p){ return p.state === "pendente"; })) return "pendente";
+  if(ps.some(function(p){ return p.state === "feito"; })) return "feito";
+  if(hasPendencias && ps.every(function(p){ return p.state === "concluido"; })) return "concluido";
+  if(hasPendencias && ps.every(function(p){ return p.state === "conferido" || p.state === "concluido"; })) return "conferido";
 
   if(!hasPendencias && (hasPhotos || hasInspectionMark)) return "conferido";
 
@@ -829,56 +912,56 @@ function apartmentStatus(a){
 }
 
 function obraCounters(obra){
-  let total=0, semVist=0, pend=0, feito=0, conferido=0, reprov=0;
+  var total=0, semVist=0, pend=0, feito=0, conferido=0, concluido=0;
 
-  Object.values(obra.blocks || {}).forEach(b=>{
-    const nums = aptNumsForBlock(obra, b);
-    nums.forEach(num=>{
+  Object.values(obra.blocks || {}).forEach(function(b){
+    var nums = aptNumsForBlock(obra, b);
+    nums.forEach(function(num){
       total++;
-      const a = getApartmentView(obra.id, b.id, num);
-      const st = apartmentStatus(a);
+      var a = getApartmentView(obra.id, b.id, num);
+      var st = apartmentStatus(a);
 
       if(st === "sem_vistoria") semVist++;
       if(st === "pendente") pend++;
       if(st === "feito") feito++;
       if(st === "conferido") conferido++;
-      if(st === "reprovado") reprov++;
+      if(st === "concluido") concluido++;
     });
   });
 
-  return { total, semVist, pend, feito, conferido, reprov };
+  return { total:total, semVist:semVist, pend:pend, feito:feito, conferido:conferido, concluido:concluido };
 }
 
 function blockCounters(obra, block){
-  let total=0, semVist=0, pend=0, feito=0, conferido=0, reprov=0;
-  const nums = aptNumsForBlock(obra, block);
+  var total=0, semVist=0, pend=0, feito=0, conferido=0, concluido=0;
+  var nums = aptNumsForBlock(obra, block);
 
-  nums.forEach(num=>{
+  nums.forEach(function(num){
     total++;
-    const a = getApartmentView(obra.id, block.id, num);
-    const st = apartmentStatus(a);
+    var a = getApartmentView(obra.id, block.id, num);
+    var st = apartmentStatus(a);
 
     if(st === "sem_vistoria") semVist++;
     if(st === "pendente") pend++;
     if(st === "feito") feito++;
     if(st === "conferido") conferido++;
-    if(st === "reprovado") reprov++;
+    if(st === "concluido") concluido++;
   });
 
-  return { total, semVist, pend, feito, conferido, reprov };
+  return { total:total, semVist:semVist, pend:pend, feito:feito, conferido:conferido, concluido:concluido };
 }
 
 function allHistoryEntries(){
-  const rows = [];
-  Object.values(state.obras).forEach(obra=>{
-    Object.values(obra.blocks || {}).forEach(block=>{
-      Object.values(block.apartments || {}).forEach(apt=>{
-        (apt.pendencias || []).forEach(p=>{
+  var rows = [];
+  Object.values(state.obras).forEach(function(obra){
+    Object.values(obra.blocks || {}).forEach(function(block){
+      Object.values(block.apartments || {}).forEach(function(apt){
+        (apt.pendencias || []).forEach(function(p){
           rows.push({
             type:"Criada",
             date:p.createdAt,
-            by:p.createdBy?.name || "-",
-            role:p.createdBy?.role || "-",
+            by:p.createdBy && p.createdBy.name || "-",
+            role:p.createdBy && p.createdBy.role || "-",
             obra:obra.name,
             block:block.id,
             apt:apt.num,
@@ -892,8 +975,8 @@ function allHistoryEntries(){
             rows.push({
               type:"Feita",
               date:p.doneAt,
-              by:p.doneBy?.name || "-",
-              role:p.doneBy?.role || "-",
+              by:p.doneBy && p.doneBy.name || "-",
+              role:p.doneBy && p.doneBy.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
@@ -904,35 +987,51 @@ function allHistoryEntries(){
             });
           }
 
-          if(p.reviewedAt && p.state === "conferido"){
+          if(p.qualityReviewedAt && p.state !== "pendente"){
             rows.push({
               type:"Conferida",
-              date:p.reviewedAt,
-              by:p.reviewedBy?.name || "-",
-              role:p.reviewedBy?.role || "-",
+              date:p.qualityReviewedAt,
+              by:p.qualityReviewedBy && p.qualityReviewedBy.name || "-",
+              role:p.qualityReviewedBy && p.qualityReviewedBy.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
               title:p.title,
               category:p.category || "",
               location:p.location || "",
-              dur: p.doneAt ? diffHM(p.doneAt, p.reviewedAt) : "-"
+              dur: p.doneAt ? diffHM(p.doneAt, p.qualityReviewedAt) : "-"
             });
           }
 
-          if(p.reviewedAt && p.state === "reprovado"){
+          if(p.supervisorReviewedAt && p.state === "concluido"){
             rows.push({
-              type:"Reprovada",
-              date:p.reviewedAt,
-              by:p.reviewedBy?.name || "-",
-              role:p.reviewedBy?.role || "-",
+              type:"Concluída",
+              date:p.supervisorReviewedAt,
+              by:p.supervisorReviewedBy && p.supervisorReviewedBy.name || "-",
+              role:p.supervisorReviewedBy && p.supervisorReviewedBy.role || "-",
               obra:obra.name,
               block:block.id,
               apt:apt.num,
               title:p.title,
               category:p.category || "",
               location:p.location || "",
-              dur: p.doneAt ? diffHM(p.doneAt, p.reviewedAt) : "-"
+              dur: p.qualityReviewedAt ? diffHM(p.qualityReviewedAt, p.supervisorReviewedAt) : "-"
+            });
+          }
+
+          if(p.rejectionAt){
+            rows.push({
+              type:"Reprovada",
+              date:p.rejectionAt,
+              by:p.rejectionBy && p.rejectionBy.name || "-",
+              role:p.rejectionBy && p.rejectionBy.role || "-",
+              obra:obra.name,
+              block:block.id,
+              apt:apt.num,
+              title:p.title,
+              category:p.category || "",
+              location:p.location || "",
+              dur:"-"
             });
           }
         });
@@ -940,15 +1039,16 @@ function allHistoryEntries(){
     });
   });
 
-  rows.sort((a,b)=> new Date(b.date) - new Date(a.date));
+  rows.sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
   return rows;
 }
 
-// ---------- UI ----------
-const app = $("#app");
+var app = $("#app");
 
-function topbar(title, subtitle="", rightHtml=""){
-  const u = getCurrentUser();
+function topbar(title, subtitle, rightHtml){
+  subtitle = subtitle || "";
+  rightHtml = rightHtml || "";
+  var u = getCurrentUser();
   return `
   <div class="topbar">
     <div class="topbar__left">
@@ -961,7 +1061,6 @@ function topbar(title, subtitle="", rightHtml=""){
     </div>
   </div>`;
 }
-
 function roleHomeLabel(u){
   if(!u) return "Entrar";
   if(u.role==="supervisor") return "Painel do Supervisor";
@@ -974,13 +1073,13 @@ function roleHomeLabel(u){
 }
 
 function render(){
-  const u = getCurrentUser();
+  var u = getCurrentUser();
   if(!u && routes.screen !== "login"){
     goto("login");
     return;
   }
 
-  let html = "";
+  var html = "";
   if(routes.screen === "login") html = renderLogin();
   else if(routes.screen === "home") html = renderHome(u);
   else if(routes.screen === "users") html = renderUsers(u);
@@ -1004,11 +1103,10 @@ function render(){
 }
 
 function bindCommon(){
-  $$(".js-logout").forEach(b => b.onclick = logout);
-  $$(".js-home").forEach(b => b.onclick = ()=> goto("home"));
+  $$(".js-logout").forEach(function(b){ b.onclick = logout; });
+  $$(".js-home").forEach(function(b){ b.onclick = function(){ goto("home"); }; });
 }
 
-// ---------- Login ----------
 function renderLogin(){
   return `
   <div class="shell shell--center">
@@ -1031,10 +1129,10 @@ function renderLogin(){
 }
 
 function bindLogin(){
-  $("#btnLogin").onclick = ()=>{
-    const user = ($("#loginUser").value || "").trim();
-    const pin = ($("#loginPin").value || "").trim();
-    const u = state.users.find(x => x.id === user && String(x.pin) === pin && x.active);
+  $("#btnLogin").onclick = function(){
+    var user = ($("#loginUser").value || "").trim();
+    var pin = ($("#loginPin").value || "").trim();
+    var u = state.users.find(function(x){ return x.id === user && String(x.pin) === pin && x.active; });
     if(!u){
       toast("Usuário ou PIN inválido");
       return;
@@ -1045,35 +1143,34 @@ function bindLogin(){
     goto("home");
   };
 
-  $("#loginPin").addEventListener("keydown", (e)=>{
+  $("#loginPin").addEventListener("keydown", function(e){
     if(e.key === "Enter") $("#btnLogin").click();
   });
 
-  $("#loginUser").addEventListener("keydown", (e)=>{
+  $("#loginUser").addEventListener("keydown", function(e){
     if(e.key === "Enter") $("#loginPin").focus();
   });
 }
 
-// ---------- Home ----------
 function renderHome(u){
-  const obras = visibleObrasFor(u);
+  var obras = visibleObrasFor(u);
 
-  const actions = [];
+  var actions = [];
   if(canManageUsers(u)) actions.push(`<button class="btn" id="btnUsers">Usuários</button>`);
   if(canManageObras(u)) actions.push(`<button class="btn btn--orange" id="btnCreateObra">+ Obra</button>`);
   actions.push(`<button class="btn" id="btnHistory">Histórico</button>`);
   actions.push(`<button class="btn js-logout">Sair</button>`);
 
-  const listByCity = (city, title) => {
-    const arr = obras.filter(o => normalizeCity(o.city) === city);
+  function listByCity(city, title){
+    var arr = obras.filter(function(o){ return normalizeCity(o.city) === city; });
     if(!arr.length) return "";
     return `
       <div class="city-group">
         <div class="city-line">${title}</div>
         <div class="grid grid--obra">
-          ${arr.map(o=>{
-            const obra = state.obras[o.id];
-            const c = obra ? obraCounters(obra) : { total:0, semVist:0, pend:0, feito:0, conferido:0, reprov:0 };
+          ${arr.map(function(o){
+            var obra = state.obras[o.id];
+            var c = obra ? obraCounters(obra) : { total:0, semVist:0, pend:0, feito:0, conferido:0, concluido:0 };
             return `
               <button class="card obra-card js-open-obra" data-obra="${esc(o.id)}">
                 <div class="obra-card__title">${esc(o.name)}</div>
@@ -1083,14 +1180,14 @@ function renderHome(u){
                   <span class="stat stat--pend">Pend.: ${c.pend}</span>
                   <span class="stat stat--feito">Feito: ${c.feito}</span>
                   <span class="stat stat--conf">Conf.: ${c.conferido}</span>
-                  <span class="stat stat--repr">Repr.: ${c.reprov}</span>
+                  <span class="stat stat--conc">Concl.: ${c.concluido}</span>
                 </div>
               </button>`;
           }).join("")}
         </div>
       </div>
     `;
-  };
+  }
 
   return `
   <div class="shell">
@@ -1102,29 +1199,14 @@ function renderHome(u){
   </div>`;
 }
 
-function bindHome(u){
-  const btnUsers = $("#btnUsers");
-  if(btnUsers) btnUsers.onclick = ()=> goto("users");
-
-  const btnCreateObra = $("#btnCreateObra");
-  if(btnCreateObra) btnCreateObra.onclick = ()=> goto("createObra");
-
-  const btnHistory = $("#btnHistory");
-  if(btnHistory) btnHistory.onclick = ()=> goto("history");
-
-  $$(".js-open-obra").forEach(b=>{
-    b.onclick = ()=> goto("obra", { obraId: b.dataset.obra });
-  });
-}
-
-// ---------- Users ----------
 function renderUsers(u){
   if(!canManageUsers(u)) return renderForbidden();
 
-  const list = state.users
+  var list = state.users
     .slice()
-    .sort((a,b)=> a.name.localeCompare(b.name, "pt-BR"))
-    .map(x=>`
+    .sort(function(a,b){ return a.name.localeCompare(b.name, "pt-BR"); })
+    .map(function(x){
+      return `
       <div class="row row--user">
         <div>
           <div class="strong">${esc(x.name)}</div>
@@ -1137,8 +1219,8 @@ function renderUsers(u){
         <div class="row" style="gap:8px">
           ${x.role === "supervisor" ? `` : `<button class="btn btn--danger js-del-user" data-user="${esc(x.id)}">Excluir</button>`}
         </div>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
 
   return `
   <div class="shell">
@@ -1185,74 +1267,11 @@ function renderUsers(u){
   </div>`;
 }
 
-function bindUsers(u){
-  const obraSel = $("#newUserObra");
-  const obras = visibleObrasFor(u);
-  obraSel.innerHTML = obras.map(o=> `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
-
-  const btnAddSup = $("#btnAddSup");
-  if(btnAddSup){
-    btnAddSup.onclick = ()=>{
-      const name = prompt("Nome do supervisor:");
-      if(!name) return;
-      const id = slugify(prompt("Usuário (id):") || "");
-      if(!id) return toast("Informe um id válido");
-      const pin = (prompt("PIN:") || "").trim();
-      if(!pin) return toast("Informe um PIN");
-      if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
-
-      state.users.push({
-        id, name, role:"supervisor", pin,
-        obraIds:["*"], active:true, cityScope:"*"
-      });
-      saveState();
-      render();
-      toast("Supervisor criado");
-    };
-  }
-
-  $("#btnCreateUser").onclick = ()=>{
-    const name = ($("#newUserName").value || "").trim();
-    const id = slugify(($("#newUserId").value || "").trim());
-    const pin = ($("#newUserPin").value || "").trim();
-    const role = ($("#newUserRole").value || "").trim();
-    const obraId = ($("#newUserObra").value || "").trim();
-
-    if(!name || !id || !pin) return toast("Preencha nome, usuário e PIN");
-    if(state.users.some(x=>x.id===id)) return toast("ID de usuário já existe");
-    if(role !== "execucao") return toast("Só é permitido criar login de execução aqui");
-    if(!state.obras[obraId]) return toast("Selecione uma obra válida");
-
-    state.users.push({
-      id, name, role, pin,
-      obraIds:[obraId],
-      active:true
-    });
-    saveState();
-    render();
-    toast("Login criado");
-  };
-
-  $$(".js-del-user").forEach(b=>{
-    b.onclick = ()=>{
-      const id = b.dataset.user;
-      const user = state.users.find(x=>x.id===id);
-      if(!user) return;
-      if(!confirm(`Excluir o login "${user.name}"?`)) return;
-      state.users = state.users.filter(x=>x.id!==id);
-      saveState();
-      render();
-      toast("Login excluído");
-    };
-  });
-}
-
-// ---------- Create Obra ----------
 function renderCreateObra(u){
   if(!canManageObras(u)) return renderForbidden();
 
-  const cityScope = getUserCityScope(u);
-  const cityDisabled = u.role === "qualidade" ? "disabled" : "";
+  var cityScope = getUserCityScope(u);
+  var cityDisabled = u.role === "qualidade" ? "disabled" : "";
 
   return `
   <div class="shell">
@@ -1313,75 +1332,14 @@ function renderCreateObra(u){
   </div>`;
 }
 
-function bindCreateObra(u){
-  $("#btnCreateObraNow").onclick = async ()=>{
-    const name = ($("#obraName").value || "").trim();
-    const rawCode = ($("#obraCode").value || "").trim();
-    let city = normalizeCity(($("#obraCity").value || "valparaiso").trim());
-    const numBlocks = Math.max(1, Number($("#obraBlocks").value || 1));
-    const aptsPerBlock = Number($("#obraApts").value || 16) === 12 ? 12 : 16;
-    const execName = ($("#execName").value || "").trim();
-    const execUser = slugify(($("#execUser").value || "").trim());
-    const execPin = ($("#execPin").value || "").trim();
-
-    if(u.role === "qualidade"){
-      city = normalizeCity(u.cityScope || city);
-    }
-
-    if(!name || !execName || !execUser || !execPin) return toast("Preencha todos os campos");
-
-    const obraId = slugify(rawCode || name);
-    if(state.obras[obraId] || state.obras_index.some(x=>x.id===obraId)) return toast("ID da obra já existe");
-    if(state.users.some(x=>x.id===execUser)) return toast("Usuário de execução já existe");
-
-    const blocks = {};
-    for(let i=1;i<=numBlocks;i++){
-      const bid = "B" + i;
-      blocks[bid] = { id:bid, apartments:{} };
-    }
-
-    state.obras[obraId] = {
-      id: obraId,
-      name,
-      city,
-      config: { numBlocks, aptsPerBlock },
-      blocks
-    };
-
-    state.obras_index.push({
-      id: obraId,
-      name,
-      city,
-      config: { numBlocks, aptsPerBlock }
-    });
-
-    state.users.push({
-      id: execUser,
-      name: execName,
-      role: "execucao",
-      pin: execPin,
-      obraIds: [obraId],
-      active: true
-    });
-
-    state._meta.deletedObraIds = (state._meta.deletedObraIds || []).filter(x => x !== obraId);
-    state._meta.deletedExecIds = (state._meta.deletedExecIds || []).filter(x => x !== execUser);
-
-    saveState();
-    toast("Obra criada com sucesso");
-    goto("home");
-  };
-}
-
-// ---------- Obra ----------
 function renderObra(u, obraId){
-  const obra = state.obras[obraId];
+  var obra = state.obras[obraId];
   if(!obra || !canSeeObra(u, obraId)) return renderForbidden();
 
-  const blocks = Object.values(obra.blocks || {})
-    .sort((a,b)=> Number(String(a.id).replace(/\D/g,"")) - Number(String(b.id).replace(/\D/g,"")))
-    .map(b=>{
-      const c = blockCounters(obra, b);
+  var blocks = Object.values(obra.blocks || {})
+    .sort(function(a,b){ return Number(String(a.id).replace(/\D/g,"")) - Number(String(b.id).replace(/\D/g,"")); })
+    .map(function(b){
+      var c = blockCounters(obra, b);
       return `
         <button class="card block-card js-open-block" data-block="${esc(b.id)}">
           <div class="block-card__title">${esc(b.id)}</div>
@@ -1390,19 +1348,19 @@ function renderObra(u, obraId){
             <span class="stat stat--pend">Pend.: ${c.pend}</span>
             <span class="stat stat--feito">Feito: ${c.feito}</span>
             <span class="stat stat--conf">Conf.: ${c.conferido}</span>
-            <span class="stat stat--repr">Repr.: ${c.reprov}</span>
+            <span class="stat stat--conc">Concl.: ${c.concluido}</span>
           </div>
         </button>
       `;
     }).join("");
 
-  const deleteBtn = canManageObras(u)
+  var deleteBtn = canManageObras(u)
     ? `<button class="btn btn--subtle-danger btn--small" id="btnDeleteObra">Excluir obra</button>`
     : ``;
 
   return `
   <div class="shell">
-    ${topbar(esc(obra.name), `${obra.city==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} · ${obra.config?.numBlocks || 0} blocos`, `
+    ${topbar(esc(obra.name), `${obra.city==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} · ${obra.config && obra.config.numBlocks || 0} blocos`, `
       <button class="btn js-home">Voltar</button>
       ${deleteBtn}
       <button class="btn js-logout">Sair</button>
@@ -1413,82 +1371,36 @@ function renderObra(u, obraId){
   </div>`;
 }
 
-function bindObra(u, obraId){
-  const obra = state.obras[obraId];
-  if(!obra) return;
-
-  $$(".js-open-block").forEach(b=>{
-    b.onclick = ()=> goto("block", { obraId, blockId: b.dataset.block });
-  });
-
-  const btnDelete = $("#btnDeleteObra");
-  if(btnDelete){
-    btnDelete.onclick = async ()=>{
-      const obra = state.obras[obraId];
-      if(!obra) return;
-
-      const execUsers = state.users.filter(x => x.role === "execucao" && (x.obraIds || []).includes(obraId));
-      const execMsg = execUsers.length
-        ? `\nTambém será(ão) excluído(s) o(s) login(s): ${execUsers.map(x=>x.id).join(", ")}`
-        : "";
-
-      if(!confirm(`Excluir a obra "${obra.name}"?${execMsg}\n\nEssa ação remove a obra para poder recriá-la do zero depois.`)) return;
-
-      state._meta.deletedObraIds = Array.from(new Set([...(state._meta.deletedObraIds || []), obraId]));
-      execUsers.forEach(x=>{
-        state._meta.deletedExecIds = Array.from(new Set([...(state._meta.deletedExecIds || []), x.id]));
-      });
-
-      try{
-        await deleteAllApartmentDocsForObra(obraId);
-      }catch(e){
-        console.warn("Falha ao excluir apartments da obra:", e);
-      }
-
-      state.users = state.users.filter(x => !(x.role==="execucao" && (x.obraIds || []).includes(obraId)));
-      delete state.obras[obraId];
-      state.obras_index = state.obras_index.filter(x => x.id !== obraId);
-      state.last_obras_refresh = new Date().toISOString();
-
-      saveState();
-      toast("Obra excluída");
-      goto("home");
-    };
-  }
-}
-
-// ---------- Block ----------
 function renderBlock(u, obraId, blockId){
-  const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
+  var obra = state.obras[obraId];
+  var block = obra && obra.blocks ? obra.blocks[blockId] : null;
   if(!obra || !block || !canSeeObra(u, obraId)) return renderForbidden();
 
-  const nums = aptNumsForBlock(obra, block);
+  var nums = aptNumsForBlock(obra, block);
 
-  const cards = nums.map(n=>{
-    const a = getApartmentView(obraId, blockId, n);
-    const st = apartmentStatus(a);
+  var cards = nums.map(function(n){
+    var a = getApartmentView(obraId, blockId, n);
+    var st = apartmentStatus(a);
 
-    const extra =
+    var extra =
       st==="sem_vistoria" ? "card-apt--sem" :
       st==="pendente" ? "card-apt--pend" :
       st==="feito" ? "card-apt--feito" :
-      st==="reprovado" ? "card-apt--repr" :
+      st==="concluido" ? "card-apt--conc" :
       "card-apt--conf";
 
-    const label =
+    var label =
       st==="sem_vistoria" ? "Sem vistoria" :
       st==="pendente" ? "Com pendências" :
-      st==="feito" ? "Aguardando conferência" :
-      st==="reprovado" ? "Reprovado" :
-      "Concluído";
+      st==="feito" ? "Aguardando qualidade" :
+      st==="concluido" ? "Concluído" :
+      "Conferido";
 
     return `
       <button class="card apt-card ${extra} js-open-apt" data-apt="${esc(n)}">
         <div class="apt-card__num">${esc(n)}</div>
         <div class="apt-card__status">${label}</div>
-      </button>
-    `;
+      </button>`;
   }).join("");
 
   return `
@@ -1503,29 +1415,19 @@ function renderBlock(u, obraId, blockId){
   </div>`;
 }
 
-function bindBlock(u, obraId, blockId){
-  const btnBack = $("#btnBackObra");
-  if(btnBack) btnBack.onclick = ()=> goto("obra", { obraId });
-
-  $$(".js-open-apt").forEach(b=>{
-    b.onclick = ()=> goto("apt", { obraId, blockId, aptNum: b.dataset.apt });
-  });
-}
-
-// ---------- Apartment ----------
 function renderApartment(u, obraId, blockId, aptNum){
-  const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
-  const apt = getApartmentView(obraId, blockId, aptNum);
+  var obra = state.obras[obraId];
+  var block = obra && obra.blocks ? obra.blocks[blockId] : null;
+  var apt = getApartmentView(obraId, blockId, aptNum);
   if(!obra || !block || !apt || !canSeeObra(u, obraId)) return renderForbidden();
 
-  const tabs = `
+  var tabs = `
     <div class="tabs">
       <button class="tab ${routes.tab==="pendencias" ? "is-active" : ""}" data-tab="pendencias">Pendências</button>
       <button class="tab ${routes.tab==="fotos" ? "is-active" : ""}" data-tab="fotos">Fotos</button>
     </div>`;
 
-  const body = routes.tab==="fotos"
+  var body = routes.tab==="fotos"
     ? renderAptPhotos(u, obraId, blockId, aptNum, apt)
     : renderAptPendencias(u, obraId, blockId, aptNum, apt);
 
@@ -1543,44 +1445,49 @@ function renderApartment(u, obraId, blockId, aptNum){
 }
 
 function renderAptPendencias(u, obraId, blockId, aptNum, apt){
-  const canCreate = u.role==="qualidade" || u.role==="supervisor";
-  const canDo = u.role==="execucao";
-  const canDeleteOwn = u.role==="qualidade" || u.role==="supervisor";
-  const canSupervisorDelete = u.role==="supervisor";
+  var canCreate = u.role==="qualidade" || u.role==="supervisor";
+  var canDo = u.role==="execucao";
+  var canDeleteOwn = u.role==="qualidade" || u.role==="supervisor";
+  var canSupervisorDelete = u.role==="supervisor";
 
-  const list = (apt.pendencias || [])
+  var list = (apt.pendencias || [])
     .slice()
-    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
-    .map(p=>{
-      const badge =
+    .sort(function(a,b){ return new Date(b.createdAt) - new Date(a.createdAt); })
+    .map(function(p){
+      var badge =
         p.state==="pendente" ? `<span class="badge badge--pend">Pendente</span>` :
-        p.state==="feito" ? `<span class="badge badge--feito">Aguardando conferência</span>` :
-        p.state==="reprovado" ? `<span class="badge badge--repr">Reprovado</span>` :
-        `<span class="badge badge--conf">Conferido</span>`;
+        p.state==="feito" ? `<span class="badge badge--feito">Aguardando qualidade</span>` :
+        p.state==="conferido" ? `<span class="badge badge--conf">Conferido</span>` :
+        `<span class="badge badge--conc">Concluído</span>`;
 
-      const photos = (p.photos || []).map(ph => `
+      var photos = (p.photos || []).map(function(ph){
+        return `
         <a class="photo-thumb" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
           <img src="${esc(ph.dataUrl || "")}" alt="foto"/>
-        </a>`).join("");
+        </a>`;
+      }).join("");
 
-      let actions = "";
+      var actions = "";
 
       if(canDo && p.state==="pendente"){
         actions += `<button class="btn btn--primary js-mark-done" data-p="${esc(p.id)}">Marcar como feito</button>`;
       }
-      if(canDo && p.state==="feito"){
-        actions += `<button class="btn js-undo-done" data-p="${esc(p.id)}">Desfazer feito</button>`;
-      }
-      if(canReview(u) && p.state==="feito"){
+
+      if(canQualityReview(u) && p.state==="feito"){
         actions += `
-          <button class="btn btn--primary js-review-ok" data-p="${esc(p.id)}">Conferir</button>
-          <button class="btn btn--danger js-review-no" data-p="${esc(p.id)}">Reprovar</button>
+          <button class="btn btn--primary js-quality-ok" data-p="${esc(p.id)}">Aprovar</button>
+          <button class="btn btn--danger js-quality-no" data-p="${esc(p.id)}">Reprovar</button>
         `;
       }
-      if(canDo && p.state==="reprovado"){
-        actions += `<button class="btn btn--primary js-rework" data-p="${esc(p.id)}">Marcar retrabalho como feito</button>`;
+
+      if(canSupervisorReview(u) && p.state==="conferido"){
+        actions += `
+          <button class="btn btn--primary js-supervisor-ok" data-p="${esc(p.id)}">Aprovar</button>
+          <button class="btn btn--danger js-supervisor-no" data-p="${esc(p.id)}">Reprovar</button>
+        `;
       }
-      if((canDeleteOwn && p.createdBy?.id===u.id) || canSupervisorDelete){
+
+      if((canDeleteOwn && p.createdBy && p.createdBy.id===u.id) || canSupervisorDelete){
         actions += `<button class="btn btn--danger js-del-pend" data-p="${esc(p.id)}">Excluir</button>`;
       }
 
@@ -1590,20 +1497,20 @@ function renderAptPendencias(u, obraId, blockId, aptNum, apt){
             <div>
               <div class="strong">${esc(p.title)}</div>
               <div class="small">${esc(p.category || "-")} · ${esc(p.location || "-")}</div>
-              <div class="small">Criada por ${esc(p.createdBy?.name || "-")} em ${fmtDT(p.createdAt)}</div>
-              ${p.doneAt ? `<div class="small">Feita por ${esc(p.doneBy?.name || "-")} em ${fmtDT(p.doneAt)}</div>` : ``}
-              ${p.reviewedAt ? `<div class="small">${p.state==="conferido" ? "Conferida" : "Reprovada"} por ${esc(p.reviewedBy?.name || "-")} em ${fmtDT(p.reviewedAt)}</div>` : ``}
-              ${p.rejection ? `<div class="small">Motivo: ${esc(p.rejection)}</div>` : ``}
+              <div class="small">Criada por ${esc(p.createdBy && p.createdBy.name || "-")} em ${fmtDT(p.createdAt)}</div>
+              ${p.doneAt ? `<div class="small">Feita por ${esc(p.doneBy && p.doneBy.name || "-")} em ${fmtDT(p.doneAt)}</div>` : ``}
+              ${p.qualityReviewedAt ? `<div class="small">Qualidade aprovou em ${fmtDT(p.qualityReviewedAt)}</div>` : ``}
+              ${p.supervisorReviewedAt ? `<div class="small">Supervisor aprovou em ${fmtDT(p.supervisorReviewedAt)}</div>` : ``}
+              ${p.rejection ? `<div class="small">Última reprovação: ${esc(p.rejection)}</div>` : ``}
             </div>
             ${badge}
           </div>
           ${photos ? `<div class="photo-grid" style="margin-top:12px">${photos}</div>` : ``}
           ${actions ? `<div class="row" style="gap:8px; margin-top:12px; flex-wrap:wrap">${actions}</div>` : ``}
-        </div>
-      `;
+        </div>`;
     }).join("");
 
-  const form = canCreate ? `
+  var form = canCreate ? `
     <div class="card">
       <div class="h1">Nova pendência</div>
       <div class="form grid2">
@@ -1636,22 +1543,23 @@ function renderAptPendencias(u, obraId, blockId, aptNum, apt){
 }
 
 function renderAptPhotos(u, obraId, blockId, aptNum, apt){
-  const canUpload = u.role==="qualidade" || u.role==="supervisor";
+  var canUpload = u.role==="qualidade" || u.role==="supervisor";
 
-  const photos = (apt.photos || [])
+  var photos = (apt.photos || [])
     .slice()
-    .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt))
-    .map(ph=>`
+    .sort(function(a,b){ return new Date(b.createdAt) - new Date(a.createdAt); })
+    .map(function(ph){
+      return `
       <div class="card">
         <a class="photo-thumb photo-thumb--big" href="${esc(ph.dataUrl || "#")}" target="_blank" rel="noopener">
           <img src="${esc(ph.dataUrl || "")}" alt="foto apartamento"/>
         </a>
-        <div class="small" style="margin-top:8px">${fmtDT(ph.createdAt)} · ${esc(ph.createdBy?.name || "-")}</div>
+        <div class="small" style="margin-top:8px">${fmtDT(ph.createdAt)} · ${esc(ph.createdBy && ph.createdBy.name || "-")}</div>
         ${u.role==="qualidade" || u.role==="supervisor"
           ? `<div class="row" style="margin-top:8px"><button class="btn btn--danger js-del-apt-photo" data-ph="${esc(ph.id)}">Excluir</button></div>`
           : ``}
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
 
   return `
     ${canUpload ? `
@@ -1667,37 +1575,217 @@ function renderAptPhotos(u, obraId, blockId, aptNum, apt){
   `;
 }
 
-function bindApartment(u, obraId, blockId, aptNum){
-  const btnBack = $("#btnBackBlock");
-  if(btnBack) btnBack.onclick = ()=> goto("block", { obraId, blockId });
+function bindUsers(u){
+  var obraSel = $("#newUserObra");
+  var obras = visibleObrasFor(u);
+  obraSel.innerHTML = obras.map(function(o){ return `<option value="${esc(o.id)}">${esc(o.name)}</option>`; }).join("");
 
-  $$(".tab").forEach(t=>{
-    t.onclick = ()=>{
+  var btnAddSup = $("#btnAddSup");
+  if(btnAddSup){
+    btnAddSup.onclick = function(){
+      var name = prompt("Nome do supervisor:");
+      if(!name) return;
+      var id = slugify(prompt("Usuário (id):") || "");
+      if(!id) return toast("Informe um id válido");
+      var pin = (prompt("PIN:") || "").trim();
+      if(!pin) return toast("Informe um PIN");
+      if(state.users.some(function(x){ return x.id===id; })) return toast("ID de usuário já existe");
+
+      state.users.push({
+        id:id, name:name, role:"supervisor", pin:pin,
+        obraIds:["*"], active:true, cityScope:"*"
+      });
+      saveState();
+      render();
+      toast("Supervisor criado");
+    };
+  }
+
+  $("#btnCreateUser").onclick = function(){
+    var name = ($("#newUserName").value || "").trim();
+    var id = slugify(($("#newUserId").value || "").trim());
+    var pin = ($("#newUserPin").value || "").trim();
+    var role = ($("#newUserRole").value || "").trim();
+    var obraId = ($("#newUserObra").value || "").trim();
+
+    if(!name || !id || !pin) return toast("Preencha nome, usuário e PIN");
+    if(state.users.some(function(x){ return x.id===id; })) return toast("ID de usuário já existe");
+    if(role !== "execucao") return toast("Só é permitido criar login de execução aqui");
+    if(!state.obras[obraId]) return toast("Selecione uma obra válida");
+
+    state.users.push({
+      id:id, name:name, role:role, pin:pin,
+      obraIds:[obraId], active:true
+    });
+    saveState();
+    render();
+    toast("Login criado");
+  };
+
+  $$(".js-del-user").forEach(function(b){
+    b.onclick = function(){
+      var id = b.dataset.user;
+      var user = state.users.find(function(x){ return x.id===id; });
+      if(!user) return;
+      if(!confirm(`Excluir o login "${user.name}"?`)) return;
+      state.users = state.users.filter(function(x){ return x.id!==id; });
+      saveState();
+      render();
+      toast("Login excluído");
+    };
+  });
+}
+
+function bindCreateObra(u){
+  $("#btnCreateObraNow").onclick = async function(){
+    var name = ($("#obraName").value || "").trim();
+    var rawCode = ($("#obraCode").value || "").trim();
+    var city = normalizeCity(($("#obraCity").value || "valparaiso").trim());
+    var numBlocks = Math.max(1, Number($("#obraBlocks").value || 1));
+    var aptsPerBlock = Number($("#obraApts").value || 16) === 12 ? 12 : 16;
+    var execName = ($("#execName").value || "").trim();
+    var execUser = slugify(($("#execUser").value || "").trim());
+    var execPin = ($("#execPin").value || "").trim();
+
+    if(u.role === "qualidade"){
+      city = normalizeCity(u.cityScope || city);
+    }
+
+    if(!name || !execName || !execUser || !execPin) return toast("Preencha todos os campos");
+
+    var obraId = slugify(rawCode || name);
+    if(state.obras[obraId] || state.obras_index.some(function(x){ return x.id===obraId; })) return toast("ID da obra já existe");
+    if(state.users.some(function(x){ return x.id===execUser; })) return toast("Usuário de execução já existe");
+
+    var blocks = {};
+    for(var i=1;i<=numBlocks;i++){
+      var bid = "B" + i;
+      blocks[bid] = { id:bid, apartments:{} };
+    }
+
+    state.obras[obraId] = {
+      id: obraId,
+      name: name,
+      city: city,
+      config: { numBlocks:numBlocks, aptsPerBlock:aptsPerBlock },
+      blocks: blocks
+    };
+
+    state.obras_index.push({
+      id: obraId,
+      name: name,
+      city: city,
+      config: { numBlocks:numBlocks, aptsPerBlock:aptsPerBlock }
+    });
+
+    state.users.push({
+      id: execUser,
+      name: execName,
+      role: "execucao",
+      pin: execPin,
+      obraIds: [obraId],
+      active: true
+    });
+
+    state._meta.deletedObraIds = (state._meta.deletedObraIds || []).filter(function(x){ return x !== obraId; });
+    state._meta.deletedExecIds = (state._meta.deletedExecIds || []).filter(function(x){ return x !== execUser; });
+
+    saveState();
+    toast("Obra criada com sucesso");
+    goto("home");
+  };
+}
+
+function bindHome(u){
+  var btnUsers = $("#btnUsers");
+  if(btnUsers) btnUsers.onclick = function(){ goto("users"); };
+
+  var btnCreateObra = $("#btnCreateObra");
+  if(btnCreateObra) btnCreateObra.onclick = function(){ goto("createObra"); };
+
+  var btnHistory = $("#btnHistory");
+  if(btnHistory) btnHistory.onclick = function(){ goto("history"); };
+
+  $$(".js-open-obra").forEach(function(b){
+    b.onclick = function(){ goto("obra", { obraId: b.dataset.obra }); };
+  });
+}
+
+function bindObra(u, obraId){
+  $$(".js-open-block").forEach(function(b){
+    b.onclick = function(){ goto("block", { obraId: obraId, blockId: b.dataset.block }); };
+  });
+
+  var btnDelete = $("#btnDeleteObra");
+  if(btnDelete){
+    btnDelete.onclick = async function(){
+      var obra = state.obras[obraId];
+      if(!obra) return;
+
+      var execUsers = state.users.filter(function(x){ return x.role === "execucao" && (x.obraIds || []).indexOf(obraId) >= 0; });
+      var execMsg = execUsers.length ? `\nTambém será(ão) excluído(s) o(s) login(s): ${execUsers.map(function(x){ return x.id; }).join(", ")}` : "";
+
+      if(!confirm(`Excluir a obra "${obra.name}"?${execMsg}\n\nEssa ação remove a obra para poder recriá-la do zero depois.`)) return;
+
+      state._meta.deletedObraIds = Array.from(new Set((state._meta.deletedObraIds || []).concat([obraId])));
+      execUsers.forEach(function(x){
+        state._meta.deletedExecIds = Array.from(new Set((state._meta.deletedExecIds || []).concat([x.id])));
+      });
+
+      try{ await deleteAllApartmentDocsForObra(obraId); }catch(e){ console.warn(e); }
+
+      state.users = state.users.filter(function(x){ return !(x.role==="execucao" && (x.obraIds || []).indexOf(obraId) >= 0); });
+      delete state.obras[obraId];
+      state.obras_index = state.obras_index.filter(function(x){ return x.id !== obraId; });
+      state.last_obras_refresh = new Date().toISOString();
+
+      saveState();
+      toast("Obra excluída");
+      goto("home");
+    };
+  }
+}
+
+function bindBlock(u, obraId, blockId){
+  var btnBack = $("#btnBackObra");
+  if(btnBack) btnBack.onclick = function(){ goto("obra", { obraId: obraId }); };
+
+  $$(".js-open-apt").forEach(function(b){
+    b.onclick = function(){ goto("apt", { obraId: obraId, blockId: blockId, aptNum: b.dataset.apt }); };
+  });
+}
+
+function bindApartment(u, obraId, blockId, aptNum){
+  var btnBack = $("#btnBackBlock");
+  if(btnBack) btnBack.onclick = function(){ goto("block", { obraId: obraId, blockId: blockId }); };
+
+  $$(".tab").forEach(function(t){
+    t.onclick = function(){
       routes.tab = t.dataset.tab;
       render();
     };
   });
 
-  const apt = getOrMakeApartment(obraId, blockId, aptNum);
+  var apt = getOrMakeApartment(obraId, blockId, aptNum);
   if(!apt) return;
 
-  const btnAddPend = $("#btnAddPend");
+  var btnAddPend = $("#btnAddPend");
   if(btnAddPend){
-    btnAddPend.onclick = async ()=>{
-      const title = ($("#pendTitle").value || "").trim();
-      const category = ($("#pendCategory").value || "").trim();
-      const location = ($("#pendLocation").value || "").trim();
-      const files = Array.from($("#pendPhotos").files || []);
+    btnAddPend.onclick = async function(){
+      var title = ($("#pendTitle").value || "").trim();
+      var category = ($("#pendCategory").value || "").trim();
+      var location = ($("#pendLocation").value || "").trim();
+      var files = Array.from($("#pendPhotos").files || []);
       if(!title) return toast("Informe o título");
 
-      const photos = [];
-      for(const f of files){
+      var photos = [];
+      for(var i=0;i<files.length;i++){
         try{
-          const dataUrl = await readImageAsDataURL(f);
+          var dataUrl = await readImageAsDataURL(files[i]);
           photos.push({
             id: uid("ph"),
-            name: f.name,
-            dataUrl,
+            name: files[i].name,
+            dataUrl: dataUrl,
             createdAt: new Date().toISOString(),
             createdBy: { id:u.id, name:u.name, role:u.role }
           });
@@ -1708,19 +1796,22 @@ function bindApartment(u, obraId, blockId, aptNum){
 
       apt.pendencias.push({
         id: uid("p"),
-        title,
-        category,
-        location,
+        title: title,
+        category: category,
+        location: location,
         state: "pendente",
         createdAt: new Date().toISOString(),
         createdBy: { id:u.id, name:u.name, role:u.role },
         doneAt: null,
         doneBy: null,
-        reviewedAt: null,
-        reviewedBy: null,
+        qualityReviewedAt: null,
+        qualityReviewedBy: null,
+        supervisorReviewedAt: null,
+        supervisorReviewedBy: null,
         rejection: null,
-        reopenedAt: null,
-        photos
+        rejectionBy: null,
+        rejectionAt: null,
+        photos: photos
       });
 
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
@@ -1730,19 +1821,19 @@ function bindApartment(u, obraId, blockId, aptNum){
     };
   }
 
-  const btnAddAptPhotos = $("#btnAddAptPhotos");
+  var btnAddAptPhotos = $("#btnAddAptPhotos");
   if(btnAddAptPhotos){
-    btnAddAptPhotos.onclick = async ()=>{
-      const files = Array.from($("#aptPhotos").files || []);
+    btnAddAptPhotos.onclick = async function(){
+      var files = Array.from($("#aptPhotos").files || []);
       if(!files.length) return toast("Selecione ao menos uma foto");
 
-      for(const f of files){
+      for(var i=0;i<files.length;i++){
         try{
-          const dataUrl = await readImageAsDataURL(f);
+          var dataUrl = await readImageAsDataURL(files[i]);
           apt.photos.push({
             id: uid("aph"),
-            name: f.name,
-            dataUrl,
+            name: files[i].name,
+            dataUrl: dataUrl,
             createdAt: new Date().toISOString(),
             createdBy: { id:u.id, name:u.name, role:u.role }
           });
@@ -1758,11 +1849,11 @@ function bindApartment(u, obraId, blockId, aptNum){
     };
   }
 
-  $$(".js-del-apt-photo").forEach(b=>{
-    b.onclick = async ()=>{
-      const phId = b.dataset.ph;
+  $$(".js-del-apt-photo").forEach(function(b){
+    b.onclick = async function(){
+      var phId = b.dataset.ph;
       if(!confirm("Excluir esta foto?")) return;
-      apt.photos = (apt.photos || []).filter(x=>x.id !== phId);
+      apt.photos = (apt.photos || []).filter(function(x){ return x.id !== phId; });
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
@@ -1770,13 +1861,20 @@ function bindApartment(u, obraId, blockId, aptNum){
     };
   });
 
-  $$(".js-mark-done").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
+  $$(".js-mark-done").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
       if(!p) return;
       p.state = "feito";
       p.doneAt = new Date().toISOString();
       p.doneBy = { id:u.id, name:u.name, role:u.role };
+      p.qualityReviewedAt = null;
+      p.qualityReviewedBy = null;
+      p.supervisorReviewedAt = null;
+      p.supervisorReviewedBy = null;
+      p.rejection = null;
+      p.rejectionBy = null;
+      p.rejectionAt = null;
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
@@ -1784,81 +1882,87 @@ function bindApartment(u, obraId, blockId, aptNum){
     };
   });
 
-  $$(".js-undo-done").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
-      if(!p) return;
-      p.state = "pendente";
-      p.doneAt = null;
-      p.doneBy = null;
-      p.reviewedAt = null;
-      p.reviewedBy = null;
-      p.rejection = null;
-      try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
-      saveState();
-      render();
-      toast("Feito desfeito");
-    };
-  });
-
-  $$(".js-review-ok").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
+  $$(".js-quality-ok").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
       if(!p) return;
       p.state = "conferido";
-      p.reviewedAt = new Date().toISOString();
-      p.reviewedBy = { id:u.id, name:u.name, role:u.role };
+      p.qualityReviewedAt = new Date().toISOString();
+      p.qualityReviewedBy = { id:u.id, name:u.name, role:u.role };
       p.rejection = null;
+      p.rejectionBy = null;
+      p.rejectionAt = null;
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
-      toast("Pendência conferida");
+      toast("Qualidade aprovou");
     };
   });
 
-  $$(".js-review-no").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
+  $$(".js-quality-no").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
       if(!p) return;
-      const reason = prompt("Motivo da reprovação:") || "";
-      p.state = "reprovado";
-      p.reviewedAt = new Date().toISOString();
-      p.reviewedBy = { id:u.id, name:u.name, role:u.role };
+      var reason = prompt("Motivo da reprovação:") || "";
+      p.state = "pendente";
+      p.qualityReviewedAt = null;
+      p.qualityReviewedBy = null;
+      p.supervisorReviewedAt = null;
+      p.supervisorReviewedBy = null;
       p.rejection = reason.trim();
-      p.reopenedAt = new Date().toISOString();
+      p.rejectionBy = { id:u.id, name:u.name, role:u.role };
+      p.rejectionAt = new Date().toISOString();
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
-      toast("Pendência reprovada");
+      toast("Qualidade reprovou");
     };
   });
 
-  $$(".js-rework").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
+  $$(".js-supervisor-ok").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
       if(!p) return;
-      p.state = "feito";
-      p.doneAt = new Date().toISOString();
-      p.doneBy = { id:u.id, name:u.name, role:u.role };
-      p.reviewedAt = null;
-      p.reviewedBy = null;
+      p.state = "concluido";
+      p.supervisorReviewedAt = new Date().toISOString();
+      p.supervisorReviewedBy = { id:u.id, name:u.name, role:u.role };
       p.rejection = null;
+      p.rejectionBy = null;
+      p.rejectionAt = null;
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
-      toast("Retrabalho marcado como feito");
+      toast("Supervisor aprovou");
     };
   });
 
-  $$(".js-del-pend").forEach(b=>{
-    b.onclick = async ()=>{
-      const p = (apt.pendencias || []).find(x=>x.id===b.dataset.p);
+  $$(".js-supervisor-no").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
       if(!p) return;
-      if(!(u.role==="supervisor" || ((u.role==="qualidade" || u.role==="supervisor") && p.createdBy?.id===u.id))){
+      var reason = prompt("Motivo da reprovação:") || "";
+      p.state = "pendente";
+      p.supervisorReviewedAt = null;
+      p.supervisorReviewedBy = null;
+      p.rejection = reason.trim();
+      p.rejectionBy = { id:u.id, name:u.name, role:u.role };
+      p.rejectionAt = new Date().toISOString();
+      try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
+      saveState();
+      render();
+      toast("Supervisor reprovou");
+    };
+  });
+
+  $$(".js-del-pend").forEach(function(b){
+    b.onclick = async function(){
+      var p = (apt.pendencias || []).find(function(x){ return x.id===b.dataset.p; });
+      if(!p) return;
+      if(!(u.role==="supervisor" || ((u.role==="qualidade" || u.role==="supervisor") && p.createdBy && p.createdBy.id===u.id))){
         return toast("Você não pode excluir esta pendência");
       }
       if(!confirm("Excluir esta pendência?")) return;
-      apt.pendencias = (apt.pendencias || []).filter(x=>x.id !== p.id);
+      apt.pendencias = (apt.pendencias || []).filter(function(x){ return x.id !== p.id; });
       try{ await saveApartmentDoc(obraId, blockId, aptNum); }catch(e){ console.warn(e); }
       saveState();
       render();
@@ -1867,13 +1971,12 @@ function bindApartment(u, obraId, blockId, aptNum){
   });
 }
 
-// ---------- History ----------
 function renderHistory(u){
-  const rows = allHistoryEntries();
-  const filter = routes.historyFilter || "all";
-  const filtered = filter === "all"
+  var rows = allHistoryEntries();
+  var filter = routes.historyFilter || "all";
+  var filtered = filter === "all"
     ? rows
-    : rows.filter(r => slugify(r.type) === slugify(filter));
+    : rows.filter(function(r){ return slugify(r.type) === slugify(filter); });
 
   return `
   <div class="shell">
@@ -1888,6 +1991,7 @@ function renderHistory(u){
           <button class="btn ${filter==="Criada" ? "btn--primary" : ""} js-hf" data-f="Criada">Criadas</button>
           <button class="btn ${filter==="Feita" ? "btn--primary" : ""} js-hf" data-f="Feita">Feitas</button>
           <button class="btn ${filter==="Conferida" ? "btn--primary" : ""} js-hf" data-f="Conferida">Conferidas</button>
+          <button class="btn ${filter==="Concluída" ? "btn--primary" : ""} js-hf" data-f="Concluída">Concluídas</button>
           <button class="btn ${filter==="Reprovada" ? "btn--primary" : ""} js-hf" data-f="Reprovada">Reprovadas</button>
         </div>
       </div>
@@ -1910,7 +2014,8 @@ function renderHistory(u){
             </tr>
           </thead>
           <tbody>
-            ${filtered.map(r=>`
+            ${filtered.map(function(r){
+              return `
               <tr>
                 <td>${esc(r.type)}</td>
                 <td>${fmtDT(r.date)}</td>
@@ -1923,8 +2028,8 @@ function renderHistory(u){
                 <td>${esc(r.category)}</td>
                 <td>${esc(r.location)}</td>
                 <td>${esc(r.dur)}</td>
-              </tr>
-            `).join("")}
+              </tr>`;
+            }).join("")}
           </tbody>
         </table>
       </div>
@@ -1933,15 +2038,14 @@ function renderHistory(u){
 }
 
 function bindHistory(){
-  $$(".js-hf").forEach(b=>{
-    b.onclick = ()=>{
+  $$(".js-hf").forEach(function(b){
+    b.onclick = function(){
       routes.historyFilter = b.dataset.f;
       render();
     };
   });
 }
 
-// ---------- Forbidden ----------
 function renderForbidden(){
   return `
   <div class="shell shell--center">
@@ -1955,9 +2059,8 @@ function renderForbidden(){
   </div>`;
 }
 
-// ---------- CSS ----------
 (function injectCssFixes(){
-  const css = `
+  var css = `
   :root{
     --bg:#0f172a;
     --bg-soft:#111827;
@@ -1992,165 +2095,72 @@ function renderForbidden(){
   .strong{font-weight:700}
   .pill{padding:8px 10px;border-radius:999px;border:1px solid var(--line)}
   .pill--soft{background:#0b1220}
-  .card{
-    background:var(--card);
-    border:1px solid var(--line);
-    border-radius:16px;
-    padding:16px;
-    color:var(--text);
-  }
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;color:var(--text)}
   .login-card{width:min(440px,92vw)}
   .form{display:grid;gap:10px;margin-top:12px}
   .form.grid2{grid-template-columns:repeat(2,minmax(0,1fr))}
-  @media (max-width:720px){
-    .form.grid2{grid-template-columns:1fr}
-  }
+  @media (max-width:720px){.form.grid2{grid-template-columns:1fr}}
   label{font-size:13px;color:var(--muted)}
-  input,select{
-    width:100%;
-    padding:12px 14px;
-    border-radius:12px;
-    border:1px solid var(--line);
-    background:#0b1220;
-    color:var(--text);
-    outline:none
-  }
+  input,select{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);outline:none}
   input::placeholder{color:#94a3b8}
-  .btn{
-    border:1px solid var(--line);
-    background:#0b1220;
-    color:var(--text);
-    padding:10px 14px;
-    border-radius:12px;
-    cursor:pointer
-  }
+  .btn{border:1px solid var(--line);background:#0b1220;color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer}
   .btn:hover{filter:brightness(1.08)}
   .btn--block{width:100%}
   .btn--small{padding:7px 10px;font-size:12px}
   .btn--primary{background:var(--primary);border-color:#1d4ed8}
   .btn--orange{background:var(--orange);border-color:#c2410c}
   .btn--danger{background:var(--danger);border-color:#b91c1c}
-  .btn--subtle-danger{
-    background:var(--danger-soft);
-    border-color:var(--danger-soft-border);
-    color:#e5e7eb;
-  }
+  .btn--subtle-danger{background:var(--danger-soft);border-color:var(--danger-soft-border);color:#e5e7eb}
   .grid{display:grid;gap:14px}
   .grid--obra{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
   .grid--block{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
   .grid--apt{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
-  .obra-card,.block-card,.apt-card{
-    text-align:left;
-    cursor:pointer;
-    background:var(--card-2);
-    min-height:110px
-  }
+  .obra-card,.block-card,.apt-card{text-align:left;cursor:pointer;background:var(--card-2);min-height:110px}
   .obra-card__title,.block-card__title,.apt-card__num{font-size:20px;font-weight:700}
   .obra-card__meta,.apt-card__status{font-size:13px;color:var(--muted);margin-top:6px}
-  .obra-stats{
-    display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:8px;
-    margin-top:12px;
-  }
-  .stat{
-    font-size:12px;
-    padding:6px 8px;
-    border-radius:999px;
-    border:1px solid transparent;
-    background:#0b1220;
-    text-align:center;
-    white-space:nowrap;
-  }
+  .obra-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+  .stat{font-size:12px;padding:6px 8px;border-radius:999px;border:1px solid transparent;background:#0b1220;text-align:center;white-space:nowrap}
   .stat--sem{border-color:#475569;background:#1e293b}
   .stat--pend{border-color:#854d0e;background:#3f2b05}
   .stat--feito{border-color:#1d4ed8;background:#102a56}
   .stat--conf{border-color:#166534;background:#0f2a1c}
-  .stat--repr{border-color:#991b1b;background:#3b0c0c}
-  .badge{
-    font-size:12px;
-    padding:6px 10px;
-    border-radius:999px;
-    border:1px solid transparent;
-    white-space:nowrap
-  }
+  .stat--conc{border-color:#0f766e;background:#113a37}
+  .badge{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
   .badge--pend{border-color:#854d0e;background:#3f2b05}
   .badge--feito{border-color:#1d4ed8;background:#102a56}
   .badge--conf{border-color:#166534;background:#0f2a1c}
-  .badge--repr{border-color:#991b1b;background:#3b0c0c}
+  .badge--conc{border-color:#0f766e;background:#113a37}
   .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-  .tab{
-    padding:10px 14px;
-    border-radius:12px;
-    border:1px solid var(--line);
-    background:#0b1220;
-    color:var(--text);
-    cursor:pointer
-  }
+  .tab{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:#0b1220;color:var(--text);cursor:pointer}
   .tab.is-active{background:var(--primary);border-color:#1d4ed8}
   .stack{display:grid;gap:12px}
   .row{display:flex;align-items:center}
   .row--user{justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
   .list{margin-top:12px}
   .photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px}
-  .photo-thumb{
-    display:block;
-    border-radius:12px;
-    overflow:hidden;
-    border:1px solid var(--line);
-    background:#0b1220
-  }
+  .photo-thumb{display:block;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0b1220}
   .photo-thumb img{display:block;width:100%;height:110px;object-fit:cover}
   .photo-thumb--big img{height:auto;max-height:420px;object-fit:contain;background:#020617}
   .table{width:100%;border-collapse:collapse}
-  .table th,.table td{
-    padding:10px;
-    border-bottom:1px solid var(--line);
-    text-align:left;
-    vertical-align:top;
-    font-size:13px
-  }
+  .table th,.table td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:13px}
   .city-group{margin-bottom:22px}
-  .city-line{
-    color:#e2e8f0;
-    font-size:14px;
-    font-weight:700;
-    letter-spacing:.06em;
-    text-transform:uppercase;
-    margin:0 0 12px 2px;
-    padding:0;
-    background:transparent !important;
-    border:none !important;
-    box-shadow:none !important;
-  }
+  .city-line{color:#e2e8f0;font-size:14px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin:0 0 12px 2px;padding:0;background:transparent !important;border:none !important;box-shadow:none !important}
   .apt-card{background:#1f2937;color:#f8fafc}
   .card-apt--sem{background:#243244;border-color:#506273}
   .card-apt--pend{background:#3a2a12;border-color:#8b5a1c}
   .card-apt--feito{background:#14263f;border-color:#274c7a}
   .card-apt--conf{background:#163222;border-color:#2a6b46}
-  .card-apt--repr{background:#3a1616;border-color:#8b2b2b}
-  #toast{
-    position:fixed;
-    left:50%;
-    bottom:20px;
-    transform:translateX(-50%);
-    background:#020617;
-    color:#fff;
-    padding:12px 16px;
-    border-radius:12px;
-    border:1px solid #334155;
-    display:none;
-    z-index:9999
-  }`;
-
-  const style = document.createElement("style");
+  .card-apt--conc{background:#123734;border-color:#1f7a73}
+  #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#020617;color:#fff;padding:12px 16px;border-radius:12px;border:1px solid #334155;display:none;z-index:9999}
+  `;
+  var style = document.createElement("style");
   style.id = "bm-style-fixes";
   style.textContent = css;
   document.head.appendChild(style);
 })();
 
 (function ensureToast(){
-  let t = document.getElementById("toast");
+  var t = document.getElementById("toast");
   if(!t){
     t = document.createElement("div");
     t.id = "toast";
@@ -2158,10 +2168,33 @@ function renderForbidden(){
   }
 })();
 
+window.addEventListener("error", function(){
+  try{
+    var box = document.getElementById("fatalAppError");
+    if(!box){
+      box = document.createElement("div");
+      box.id = "fatalAppError";
+      box.style.position = "fixed";
+      box.style.left = "12px";
+      box.style.right = "12px";
+      box.style.top = "12px";
+      box.style.zIndex = "99999";
+      box.style.background = "#7f1d1d";
+      box.style.color = "#fff";
+      box.style.padding = "12px";
+      box.style.borderRadius = "12px";
+      box.style.fontSize = "14px";
+      box.style.lineHeight = "1.4";
+      document.body.appendChild(box);
+    }
+    box.textContent = "Erro ao abrir o app neste aparelho. Feche e abra novamente. Se continuar, limpe os dados do navegador.";
+  }catch(_){}
+});
+
 (function rebuildIndexIfNeeded(){
   if(!Array.isArray(state.obras_index)) state.obras_index = [];
-  const ids = new Set(state.obras_index.map(x=>x.id));
-  Object.values(state.obras || {}).forEach(o=>{
+  var ids = new Set(state.obras_index.map(function(x){ return x.id; }));
+  Object.values(state.obras || {}).forEach(function(o){
     if(!ids.has(o.id)){
       state.obras_index.push({
         id:o.id,
@@ -2174,12 +2207,12 @@ function renderForbidden(){
       });
     }
   });
-  state.obras_index = state.obras_index.filter(x=> !!state.obras[x.id]);
-  state.obras_index.sort((a,b)=> a.name.localeCompare(b.name, "pt-BR"));
+  state.obras_index = state.obras_index.filter(function(x){ return !!state.obras[x.id]; });
+  state.obras_index.sort(function(a,b){ return a.name.localeCompare(b.name, "pt-BR"); });
 })();
 
 (function validateSession(){
-  const u = getCurrentUser();
+  var u = getCurrentUser();
   if(state.session && !u){
     state.session = null;
     setSessionUserId("");
@@ -2188,11 +2221,11 @@ function renderForbidden(){
 })();
 
 window.BM_APP = {
-  getState: ()=> state,
-  saveState,
-  render,
-  goto,
-  logout
+  getState: function(){ return state; },
+  saveState: saveState,
+  render: render,
+  goto: goto,
+  logout: logout
 };
 
 ensureSystemDefaults();
