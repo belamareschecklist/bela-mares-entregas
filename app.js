@@ -97,17 +97,6 @@ function fmtDT(iso){
     return String(iso);
   }
 }
-function diffHM(aIso,bIso){
-  if(!aIso||!bIso) return "-";
-  try{
-    const a=new Date(aIso).getTime(), b=new Date(bIso).getTime();
-    const m=Math.max(0, Math.round((b-a)/60000));
-    const h=Math.floor(m/60), mm=m%60;
-    return `${h}h${String(mm).padStart(2,"0")}`;
-  }catch(e){
-    return "-";
-  }
-}
 function readImageAsDataURL(file){
   return new Promise((resolve,reject)=>{
     const r=new FileReader();
@@ -202,7 +191,8 @@ function seed(){
     approvedAt:null, approvedBy:null,
     rejection:null,
     reopenedAt:null,
-    photos: []
+    photos: [],
+    events:[]
   });
 
   return state;
@@ -231,7 +221,6 @@ function loadState(){
   }
 }
 let state = loadState();
-ensureSystemDefaults();
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
@@ -253,7 +242,7 @@ function ensureAptPath(obraId, blockId, apto){
   if(!state.obras) state.obras = {};
   if(!state.obras[obraId]) state.obras[obraId] = { id:obraId, name:obraId, blocks:{} };
   if(!state.obras[obraId].blocks) state.obras[obraId].blocks = {};
-  if(!state.obras[obraId].blocks[blockId]) state.obras[obraId].blocks[blockId] = { id:blockId, name:blockId, apartments:{} };
+  if(!state.obras[obraId].blocks[blockId]) state.obras[obraId].blocks[blockId] = { id:blockId, apartments:{} };
   if(!state.obras[obraId].blocks[blockId].apartments) state.obras[obraId].blocks[blockId].apartments = {};
   if(!state.obras[obraId].blocks[blockId].apartments[String(apto)]) state.obras[obraId].blocks[blockId].apartments[String(apto)] = { pendencias:[], photos:[] };
   return state.obras[obraId].blocks[blockId].apartments[String(apto)];
@@ -358,23 +347,6 @@ function normalizeAllPendencias(){
   }
 }
 
-function statusLabel(stateValue){
-  if(stateValue==="pendente") return "Pendente";
-  if(stateValue==="feito") return "Aguardando qualidade";
-  if(stateValue==="conferido") return "Aguardando supervisor";
-  if(stateValue==="concluido") return "Concluído";
-  if(stateValue==="reprovado") return "Reprovado";
-  return String(stateValue||"-");
-}
-
-function statusBadgeStyle(stateValue){
-  if(stateValue==="pendente" || stateValue==="reprovado") return "background:#3b1114;color:#ffb4b4;border:1px solid #7f1d1d;";
-  if(stateValue==="feito") return "background:#3d2a12;color:#ffd79a;border:1px solid #9a6700;";
-  if(stateValue==="conferido") return "background:#102a43;color:#bfe3ff;border:1px solid #1d4ed8;";
-  if(stateValue==="concluido") return "background:#0f2f1f;color:#bbf7d0;border:1px solid #15803d;";
-  return "background:#1f2937;color:#e5e7eb;border:1px solid #374151;";
-}
-
 function ensureSystemDefaults(){
   state.users = (state.users||[]).filter(u => !(u && u.id==="exec_athenas" && u.role==="execucao"));
 
@@ -393,48 +365,16 @@ function ensureSystemDefaults(){
     state.users.push({ id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:[], active:true });
   }
 
-  const legacyVal = new Set(["park_rubi","costa_brava","costa_rica","athenas"]);
   state.obras = state.obras || {};
   state.obras_index = state.obras_index || [];
   for(const oid of Object.keys(state.obras)){
-    if(!state.obras[oid].city){
-      state.obras[oid].city = legacyVal.has(oid) ? "valparaiso" : "valparaiso";
-    }else{
-      state.obras[oid].city = normalizeCity(state.obras[oid].city);
-    }
+    state.obras[oid].city = normalizeCity(state.obras[oid].city || "valparaiso");
   }
   state.obras_index = mergeObrasIndexLists([], state.obras_index.map(o=>{
-    const city = normalizeCity((state.obras[o.id] && state.obras[o.id].city) || o.city || (legacyVal.has(o.id) ? "valparaiso" : "valparaiso"));
+    const city = normalizeCity((state.obras[o.id] && state.obras[o.id].city) || o.city || "valparaiso");
     return { ...o, city };
   }));
   normalizeAllPendencias();
-}
-
-function userCities(u){
-  if(!u) return [];
-  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return ["*"];
-  if(u.role==="execucao") return [];
-  if(u.id==="qualidade_aguaslindas") return ["aguaslindas"];
-  if(u.id==="qualidade_valparaiso" || u.id==="qualidade_01") return ["valparaiso"];
-  return ["valparaiso"];
-}
-
-function canAccessObra(u, obraId){
-  if(!u) return false;
-  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return true;
-  if(u.role==="execucao") return (u.obraIds||[]).includes(obraId) || (u.obraIds||[]).includes("*");
-  if(u.role==="qualidade"){
-    const obra = state.obras?.[obraId];
-    const city = normalizeCity(obra?.city || state.obras_index.find(x=>x.id===obraId)?.city || "valparaiso");
-    const cities = userCities(u);
-    return cities.includes("*") || cities.includes(city);
-  }
-  return false;
-}
-
-function visibleObrasForUser(u){
-  const list = Array.isArray(state.obras_index) ? state.obras_index : [];
-  return list.filter(o => canAccessObra(u, o.id));
 }
 
 function initFirestore(){
@@ -567,7 +507,7 @@ function initFirestore(){
   }
 }
 
-function queueSaveToFirestore(pstate){
+function queueSaveToFirestore(){
   if(!fbReady) return;
   if(saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
@@ -630,9 +570,8 @@ function persistableState(){
 }
 
 function saveState(){
-  const pstate = persistableState();
   safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
-  try{ queueSaveToFirestore(pstate); }catch(_){}
+  try{ queueSaveToFirestore(); }catch(_){}
 }
 
 function safeName(obj){
@@ -660,13 +599,10 @@ function fmtEvent(ev){
   if(ev.type==="editado") return `Editado: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="apagado") return `Apagado: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="feito") return `Feito: <b>${at}</b> por <b>${esc(who)}</b>`;
-  if(ev.type==="desfeito") return `Desfeito: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="conferido") return `Conferido pela qualidade: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="aprovado") return `Aprovado pelo supervisor: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="reprovado") return `Reprovado: <b>${at}</b> por <b>${esc(who)}</b>${ev.note?(" — "+esc(ev.note)):""}`;
   if(ev.type==="reaberto") return `Reaberto: <b>${at}</b> por <b>${esc(who)}</b>`;
-  if(ev.type==="foto_add") return `Foto adicionada: <b>${at}</b> por <b>${esc(who)}</b>`;
-  if(ev.type==="foto_del") return `Foto apagada: <b>${at}</b> por <b>${esc(who)}</b>`;
   return `<b>${esc(ev.type)}</b> — ${at} — ${esc(who)}`;
 }
 
@@ -676,39 +612,42 @@ function currentUser(){
   return state.users.find(u=>String(u.id).toLowerCase()===sid && u.active) || null;
 }
 
-function canViewOnly(u){
-  return ["diretor","engenheiro","coordenador"].includes(u.role);
+function userCities(u){
+  if(!u) return [];
+  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return ["*"];
+  if(u.role==="execucao") return [];
+  if(u.id==="qualidade_aguaslindas") return ["aguaslindas"];
+  if(u.id==="qualidade_valparaiso" || u.id==="qualidade_01") return ["valparaiso"];
+  return ["valparaiso"];
 }
-function canCreate(u){
-  return ["qualidade","supervisor"].includes(u.role);
+function canAccessObra(u, obraId){
+  if(!u) return false;
+  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return true;
+  if(u.role==="execucao") return (u.obraIds||[]).includes(obraId) || (u.obraIds||[]).includes("*");
+  if(u.role==="qualidade"){
+    const obra = state.obras?.[obraId];
+    const city = normalizeCity(obra?.city || state.obras_index.find(x=>x.id===obraId)?.city || "valparaiso");
+    const cities = userCities(u);
+    return cities.includes("*") || cities.includes(city);
+  }
+  return false;
 }
-function canMarkDone(u){
-  return u.role==="execucao";
+function visibleObrasForUser(u){
+  const list = Array.isArray(state.obras_index) ? state.obras_index : [];
+  return list.filter(o => canAccessObra(u, o.id));
 }
-function canQualityReview(u){
-  return u.role==="qualidade";
-}
-function canSupervisorApprove(u){
-  return u.role==="supervisor";
-}
-function canManageObras(u){
-  return ["qualidade","supervisor"].includes(u.role);
-}
-function canManageUsers(u){
-  return ["qualidade","supervisor"].includes(u.role);
-}
-function canResetData(u){
-  return u && u.role==="supervisor";
-}
-function canCreateSupervisor(u){
-  return u.role==="supervisor";
-}
-function canDeleteObra(u){
-  return u.role==="supervisor";
-}
-function canReopen(u){
-  return ["qualidade","supervisor"].includes(u.role);
-}
+
+function canViewOnly(u){ return ["diretor","engenheiro","coordenador"].includes(u.role); }
+function canCreate(u){ return ["qualidade","supervisor"].includes(u.role); }
+function canMarkDone(u){ return u.role==="execucao"; }
+function canQualityReview(u){ return u.role==="qualidade"; }
+function canSupervisorApprove(u){ return u.role==="supervisor"; }
+function canManageObras(u){ return ["qualidade","supervisor"].includes(u.role); }
+function canManageUsers(u){ return ["qualidade","supervisor"].includes(u.role); }
+function canResetData(u){ return u && u.role==="supervisor"; }
+function canCreateSupervisor(u){ return u.role==="supervisor"; }
+function canDeleteObra(u){ return u.role==="supervisor"; }
+function canReopen(u){ return ["qualidade","supervisor"].includes(u.role); }
 
 const nav = { screen:"login", params:{} };
 
@@ -772,9 +711,22 @@ function setTopbar(){
   }
 }
 
-function sortAptNums(nums){
-  return [...nums].sort((a,b)=>Number(a)-Number(b));
+function statusLabel(stateValue){
+  if(stateValue==="pendente") return "Pendente";
+  if(stateValue==="feito") return "Aguardando qualidade";
+  if(stateValue==="conferido") return "Aguardando supervisor";
+  if(stateValue==="concluido") return "Concluído";
+  if(stateValue==="reprovado") return "Reprovado";
+  return String(stateValue||"-");
 }
+function statusBadgeStyle(stateValue){
+  if(stateValue==="pendente" || stateValue==="reprovado") return "background:#3b1114;color:#ffb4b4;border:1px solid #7f1d1d;";
+  if(stateValue==="feito") return "background:#3d2a12;color:#ffd79a;border:1px solid #9a6700;";
+  if(stateValue==="conferido") return "background:#102a43;color:#bfe3ff;border:1px solid #1d4ed8;";
+  if(stateValue==="concluido") return "background:#0f2f1f;color:#bbf7d0;border:1px solid #15803d;";
+  return "background:#1f2937;color:#e5e7eb;border:1px solid #374151;";
+}
+
 function aptStatusClass(obraId, blockId, an){
   const a = getApartmentView(obraId, blockId, an);
   const ps = a.pendencias||[];
@@ -824,7 +776,7 @@ function calcObraStats(obraId){
   if(!obra) return { total:0, semVistoria:0, conclu:0, aguard:0, pend:0 };
   let total=0, semVistoria=0, conclu=0, aguard=0, pend=0;
 
-  Object.values(obra.blocks).forEach(b=>{
+  Object.values(obra.blocks||{}).forEach(b=>{
     const nums = aptNumsForBlock(obra, b);
     nums.forEach(an=>{
       const a = getApartmentView(obraId, b.id, an);
@@ -962,33 +914,15 @@ function renderDash(root){
           <div class="h1">Visão Geral</div>
           <div class="small">Somatório de todas as obras</div>
         </div>
-        <div class="row" style="gap:8px">
-          ${canManageUsers(u) ? `<button id="btnUsersDash" class="btn">Usuários</button>` : ``}
-        </div>
       </div>
       <div class="hr"></div>
 
       <div class="kpis">
-        <div class="kpi">
-          <div class="kpi__v">${total.total}</div>
-          <div class="kpi__l">Qtd aptos</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.semVistoria}</div>
-          <div class="kpi__l">Sem vistoria</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.pend}</div>
-          <div class="kpi__l">Com pendência</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.aguard}</div>
-          <div class="kpi__l">Aguardando conferência</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__v">${total.conclu}</div>
-          <div class="kpi__l">Concluídos</div>
-        </div>
+        <div class="kpi"><div class="kpi__v">${total.total}</div><div class="kpi__l">Qtd aptos</div></div>
+        <div class="kpi"><div class="kpi__v">${total.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
+        <div class="kpi"><div class="kpi__v">${total.pend}</div><div class="kpi__l">Com pendência</div></div>
+        <div class="kpi"><div class="kpi__v">${total.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
+        <div class="kpi"><div class="kpi__v">${total.conclu}</div><div class="kpi__l">Concluídos</div></div>
       </div>
 
       <div class="hr"></div>
@@ -1025,9 +959,6 @@ function renderDash(root){
   $$('button[data-open]').forEach(b=>{
     b.onclick=()=>goto("obra",{ obraId: b.getAttribute("data-open") });
   });
-
-  const btnUsersDash = $("#btnUsersDash");
-  if(btnUsersDash) btnUsersDash.onclick = ()=> goto("users");
 }
 
 function renderHome(root){
@@ -1038,6 +969,15 @@ function renderHome(root){
   const obrasVisiveis = visibleObrasForUser(u);
   const valparaiso = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="valparaiso");
   const aguaslindas = obrasVisiveis.filter(o => normalizeCity(o.city||"valparaiso")==="aguaslindas");
+
+  function safeObraConfig(item){
+    const real = state.obras?.[item?.id] || {};
+    const cfg = item?.config || real.config || {};
+    return {
+      numBlocks: Number(cfg.numBlocks || Object.keys(real.blocks||{}).length || 0),
+      aptsPerBlock: Number(cfg.aptsPerBlock || 0)
+    };
+  }
 
   function renderSection(title, arr){
     if(!arr.length) return "";
@@ -1052,9 +992,10 @@ function renderHome(root){
       </tr>
       ${arr.map(o=>{
         const s = calcObraStats(o.id);
+        const cfg = safeObraConfig(o);
         return `
           <tr>
-            <td><b>${esc(o.name)}</b><div class="small">${o.config.numBlocks} blocos • ${o.config.aptsPerBlock} apto/bloco</div></td>
+            <td><b>${esc(o.name || o.id || "Obra")}</b><div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div></td>
             <td style="text-align:center"><b>${s.total}</b></td>
             <td style="text-align:center"><b>${s.semVistoria}</b></td>
             <td style="text-align:center"><b>${s.pend}</b></td>
@@ -1111,12 +1052,6 @@ function renderHome(root){
           <span class="badge"><span class="dot dot--r"></span> Pendência</span>
           <span class="badge"><span class="dot dot--g"></span> Concluído</span>
         </div>
-        <div class="hr"></div>
-        <div class="small">
-          <b>Qualidade / Supervisor</b>: adicionam pendências. Depois a <b>Execução</b> marca feito, a <b>Qualidade</b> confere e só então o <b>Supervisor</b> aprova ou reprova.<br><br>
-          <b>Execução</b>: só marca como FEITO na obra vinculada.<br><br>
-          <b>Diretor / Engenheiro / Coordenador</b>: só visualização.
-        </div>
       </div>
     </div>
   `;
@@ -1125,55 +1060,26 @@ function renderHome(root){
   const addBtn = $("#btnAddObra");
   if(addBtn){
     addBtn.onclick = ()=>{
-      const u = currentUser();
-      if(!canManageObras(u)) return toast("Sem permissão.");
       const { backdrop, close } = openModal(`
         <div class="modal">
           <div class="row">
-            <div>
-              <div class="h2">Adicionar obra</div>
-            </div>
+            <div><div class="h2">Adicionar obra</div></div>
             <button class="btn btn--ghost" id="mClose">✕</button>
           </div>
           <div class="hr"></div>
           <div class="grid">
-            <div>
-              <div class="small">Nome da obra</div>
-              <input id="mObraNome" class="input" placeholder="Ex.: Costa Azul" />
+            <div><div class="small">Nome da obra</div><input id="mObraNome" class="input" placeholder="Ex.: Costa Azul" /></div>
+            <div><div class="small">ID da obra (opcional)</div><input id="mObraId" class="input" placeholder="Ex.: costa_azul" /></div>
+            <div><div class="small">Criar login da Execução</div><input id="mExecUser" class="input" placeholder="Ex.: exec_costa_azul" /></div>
+            <div><div class="small">PIN da Execução</div><input id="mExecPin" class="input" inputmode="numeric" maxlength="4" placeholder="Ex.: 1234" /></div>
+            <div><div class="small">Quantidade de blocos</div><input id="mBlocos" class="input" inputmode="numeric" placeholder="Ex.: 6" /></div>
+            <div><div class="small">Aptos por bloco</div>
+              <select id="mAptos" class="input"><option value="12">12</option><option value="16">16</option></select>
             </div>
-            <div>
-              <div class="small">ID da obra (opcional)</div>
-              <input id="mObraId" class="input" placeholder="Ex.: costa_azul" />
+            <div><div class="small">Cidade</div>
+              <select id="mCidade" class="input"><option value="valparaiso">Valparaíso</option><option value="aguaslindas">Águas Lindas</option></select>
             </div>
-            <div>
-              <div class="small">Criar login da Execução (1 por obra)</div>
-              <input id="mExecUser" class="input" placeholder="Ex.: exec_costa_azul" />
-            </div>
-            <div>
-              <div class="small">PIN da Execução</div>
-              <input id="mExecPin" class="input" inputmode="numeric" maxlength="4" placeholder="Ex.: 1234" />
-            </div>
-            <div>
-              <div class="small">Quantidade de blocos</div>
-              <input id="mBlocos" class="input" inputmode="numeric" placeholder="Ex.: 6" />
-            </div>
-            <div>
-              <div class="small">Aptos por bloco</div>
-              <select id="mAptos" class="input">
-                <option value="12">12</option>
-                <option value="16">16</option>
-              </select>
-            </div>
-            <div>
-              <div class="small">Cidade</div>
-              <select id="mCidade" class="input">
-                <option value="valparaiso">Valparaíso</option>
-                <option value="aguaslindas">Águas Lindas</option>
-              </select>
-            </div>
-            <div class="row" style="justify-content:flex-end">
-              <button id="mAddObra" class="btn btn--orange">Adicionar</button>
-            </div>
+            <div class="row" style="justify-content:flex-end"><button id="mAddObra" class="btn btn--orange">Adicionar</button></div>
           </div>
         </div>
       `);
@@ -1207,7 +1113,7 @@ function renderHome(root){
     btn.onclick = ()=>{
       const obraId = btn.getAttribute("data-del");
       const obra = state.obras[obraId];
-      const ok = confirm(`Apagar a obra "${obra?.name||obraId}"?\n\nIsso remove do app (irreversível no protótipo).`);
+      const ok = confirm(`Apagar a obra "${obra?.name||obraId}"?\n\nIsso remove do app.`);
       if(!ok) return;
       deleteObra(obraId);
       saveState();
@@ -1233,8 +1139,6 @@ function addObra(id, name, numBlocks, aptsPerBlock, city="valparaiso", execUser=
   if(execUser || execPin){
     if(!execUser || !execPin) return { ok:false, msg:"Informe usuário e PIN da Execução." };
     if(state.users.find(u=>u.id===execUser)) return { ok:false, msg:"Usuário já existe." };
-    const already = state.users.find(u=>u.role==="execucao" && (u.obraIds||[])[0]===id && u.active);
-    if(already) return { ok:false, msg:"Já existe Execução para essa obra." };
   }
 
   const blocks = {};
@@ -1273,10 +1177,7 @@ function renderUsers(root){
   root.innerHTML = `
     <div class="card">
       <div class="row">
-        <div>
-          <div class="h1">Usuários</div>
-          <div class="small">Gerencie logins (usuário + PIN)</div>
-        </div>
+        <div><div class="h1">Usuários</div><div class="small">Gerencie logins</div></div>
         <div class="row" style="gap:8px">
           <button id="btnBackUsers" class="btn">Voltar</button>
           ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
@@ -1286,13 +1187,7 @@ function renderUsers(root){
 
       <table class="table">
         <thead>
-          <tr>
-            <th>Usuário</th>
-            <th>Nome</th>
-            <th>Perfil</th>
-            <th>Acesso</th>
-            <th>PIN</th>
-          </tr>
+          <tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Acesso</th><th>PIN</th></tr>
         </thead>
         <tbody>
           ${users.map(x=>{
@@ -1309,13 +1204,6 @@ function renderUsers(root){
           }).join("")}
         </tbody>
       </table>
-
-      <div class="hr"></div>
-      <div class="small">
-        <b>Supervisor</b>: visualiza tudo, aprova/reprova após conferência da Qualidade e gerencia usuários.<br><br>
-        <b>Qualidade</b>: cria pendências, confere o feito e gerencia obras/usuários de sua cidade.<br><br>
-        <b>Execução</b>: vê apenas sua obra e marca como feito.
-      </div>
     </div>
   `;
 
@@ -1327,28 +1215,15 @@ function renderUsers(root){
       const { backdrop, close } = openModal(`
         <div class="modal">
           <div class="row">
-            <div>
-              <div class="h2">Novo supervisor</div>
-            </div>
+            <div><div class="h2">Novo supervisor</div></div>
             <button class="btn btn--ghost" id="mClose">✕</button>
           </div>
           <div class="hr"></div>
           <div class="grid">
-            <div>
-              <div class="small">Usuário</div>
-              <input id="mUser" class="input" placeholder="Ex.: supervisor_02" />
-            </div>
-            <div>
-              <div class="small">Nome</div>
-              <input id="mName" class="input" placeholder="Ex.: Supervisor 02" />
-            </div>
-            <div>
-              <div class="small">PIN</div>
-              <input id="mPin" class="input" inputmode="numeric" maxlength="4" placeholder="Ex.: 4444" />
-            </div>
-            <div class="row" style="justify-content:flex-end">
-              <button id="mCreate" class="btn btn--orange">Criar</button>
-            </div>
+            <div><div class="small">Usuário</div><input id="mUser" class="input" placeholder="Ex.: supervisor_02" /></div>
+            <div><div class="small">Nome</div><input id="mName" class="input" placeholder="Ex.: Supervisor 02" /></div>
+            <div><div class="small">PIN</div><input id="mPin" class="input" inputmode="numeric" maxlength="4" placeholder="Ex.: 4444" /></div>
+            <div class="row" style="justify-content:flex-end"><button id="mCreate" class="btn btn--orange">Criar</button></div>
           </div>
         </div>
       `);
@@ -1388,16 +1263,17 @@ function renderObra(root){
   }
 
   const blocks = Object.values(obra.blocks||{}).sort((a,b)=>Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B","")));
+  const cfg = obra.config || { numBlocks: blocks.length || 0, aptsPerBlock: 0 };
 
   root.innerHTML = `
     <div class="card">
       <div class="row">
         <div>
           <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
-            <div class="h1">${esc(obra.name)}</div>
+            <div class="h1">${esc(obra.name || obra.id || "Obra")}</div>
             <span class="badge" style="background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#fff;border:none;text-transform:uppercase;letter-spacing:.4px">${normalizeCity(obra.city)==="aguaslindas" ? "Águas Lindas" : "Valparaíso"}</span>
           </div>
-          <div class="small">${obra.config.numBlocks} blocos • ${obra.config.aptsPerBlock} apto/bloco</div>
+          <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
         </div>
       </div>
       <div class="hr"></div>
@@ -1553,21 +1429,10 @@ function renderAptoDetalhe(root){
           </div>
           <div class="hr"></div>
           <div class="grid">
-            <div>
-              <div class="small">Descrição</div>
-              <input id="mTitle" class="input" placeholder="Ex.: Pintura com falha" />
-            </div>
-            <div>
-              <div class="small">Categoria</div>
-              <input id="mCat" class="input" placeholder="Ex.: Pintura" />
-            </div>
-            <div>
-              <div class="small">Local</div>
-              <input id="mLoc" class="input" placeholder="Ex.: Sala" />
-            </div>
-            <div class="row" style="justify-content:flex-end">
-              <button id="mCreate" class="btn btn--orange">Adicionar</button>
-            </div>
+            <div><div class="small">Descrição</div><input id="mTitle" class="input" placeholder="Ex.: Pintura com falha" /></div>
+            <div><div class="small">Categoria</div><input id="mCat" class="input" placeholder="Ex.: Pintura" /></div>
+            <div><div class="small">Local</div><input id="mLoc" class="input" placeholder="Ex.: Sala" /></div>
+            <div class="row" style="justify-content:flex-end"><button id="mCreate" class="btn btn--orange">Adicionar</button></div>
           </div>
         </div>
       `);
