@@ -43,13 +43,16 @@ function persistableStateForLocal(){
   return s;
 }
 
-
 const SESSION_KEY = "bm_checklist_session_user";
 function getSessionUserId(){
   try{ return (localStorage.getItem(SESSION_KEY)||"").trim().toLowerCase(); }catch(e){ return ""; }
 }
 function setSessionUserId(id){
-  try{ if(!id){ localStorage.removeItem(SESSION_KEY); return; }
+  try{
+    if(!id){
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
     localStorage.setItem(SESSION_KEY, String(id).trim().toLowerCase());
   }catch(e){}
 }
@@ -67,15 +70,16 @@ function toast(msg){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>{ el.style.display="none"; }, 2400);
 }
-function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-
+function esc(s){
+  return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
 
 function slugify(input){
   try{
     return String(input||"")
       .trim()
       .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"") // remove acentos
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
       .replace(/[^a-z0-9]+/g,"_")
       .replace(/^_+|_+$/g,"");
   }catch(e){
@@ -83,14 +87,15 @@ function slugify(input){
   }
 }
 
-
 function fmtDT(iso){
   if(!iso) return "-";
   try{
     const d = new Date(iso);
     const pad = (n)=> String(n).padStart(2,"0");
     return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }catch(e){ return String(iso); }
+  }catch(e){
+    return String(iso);
+  }
 }
 function diffHM(aIso,bIso){
   if(!aIso||!bIso) return "-";
@@ -99,7 +104,9 @@ function diffHM(aIso,bIso){
     const m=Math.max(0, Math.round((b-a)/60000));
     const h=Math.floor(m/60), mm=m%60;
     return `${h}h${String(mm).padStart(2,"0")}`;
-  }catch(e){ return "-"; }
+  }catch(e){
+    return "-";
+  }
 }
 function readImageAsDataURL(file){
   return new Promise((resolve,reject)=>{
@@ -115,8 +122,8 @@ function uid(prefix="id"){
 }
 
 const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
+const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
-// --- Apartamentos virtuais (para obras novas criadas "leves") ---
 function aptNumsByConfig(aptsPerBlock){
   return (Number(aptsPerBlock)===16) ? APT_NUMS_16 : APT_NUMS_12;
 }
@@ -144,12 +151,10 @@ function getApartmentView(obraId, blockId, aptNum){
   return (block?.apartments && block.apartments[an]) ? block.apartments[an] : { num: an, pendencias: [], photos: [] };
 }
 
-const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
-
 function seed(){
   const state = {
     version: 27,
-    session: null, // { userId }
+    session: null,
     users: [
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
       { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
@@ -184,13 +189,12 @@ function seed(){
   makeObra("costa_rica", "Costa Rica - Entregas", 17, 12);
   makeObra("costa_brava", "Costa Brava - Entregas", 6, 12);
 
-  // demo
   state.obras.costa_rica.blocks.B17.apartments["204"].pendencias.push({
     id: uid("p"),
     title: "Rejunte falhando",
     category: "Revestimento",
     location: "Cozinha",
-    state: "pendente", // pendente|feito|conferido|concluido|reprovado
+    state: "pendente",
     createdAt: new Date().toISOString(),
     createdBy: { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade" },
     doneAt:null, doneBy:null,
@@ -198,14 +202,13 @@ function seed(){
     approvedAt:null, approvedBy:null,
     rejection:null,
     reopenedAt:null,
-      photos: []
-    });
+    photos: []
+  });
 
   return state;
 }
 
 function loadState(){
-  // 1) localStorage (fast)  2) Firestore (if configured) will overwrite via listener
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return seed();
@@ -230,7 +233,6 @@ function loadState(){
 let state = loadState();
 ensureSystemDefaults();
 
-// ---- Firestore (live sync) ----
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
   authDomain: "bela-mares-entregas.firebaseapp.com",
@@ -240,10 +242,6 @@ const FIREBASE_CONFIG = {
   appId: "1:159475494264:web:953427de1a900f7aa3ac8d"
 };
 
-
-// --- Live sync sem estourar 1MiB ---
-// Mantém o legado em apps/bela_mares_checklist/state/main (somente leitura).
-// Novas alterações por apartamento vão para: apps/bela_mares_checklist/apartments/{obraId}__{blockId}__{apto}
 const APARTMENTS_COLLECTION = "apartments";
 let fbApartmentsUnsub = null;
 
@@ -269,10 +267,8 @@ function applyApartmentFromDoc(doc){
     const apto = String(doc.apto);
     if(!obraId || !blockId || !apto) return;
     const target = ensureAptPath(obraId, blockId, apto);
-    // substitui somente os campos do apartamento (não mexe no resto do state)
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : (target.pendencias||[]);
     target.photos = Array.isArray(doc.photos) ? doc.photos : (target.photos||[]);
-    // marca timestamp local
     if(!target._meta) target._meta = {};
     if(typeof doc.updatedAtMs === "number") target._meta.updatedAtMs = doc.updatedAtMs;
   }catch(e){
@@ -280,7 +276,6 @@ function applyApartmentFromDoc(doc){
   }
 }
 
-// Salva um estado "meta" pequeno (sem apartments) para evitar LocalStorage/quota e não tentar sobrescrever o legado gigante.
 function persistableMetaState(){
   const copy = JSON.parse(JSON.stringify(persistableState()));
   if(copy && copy.obras){
@@ -304,7 +299,7 @@ let fbMetaUnsub = null;
 let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
-let lastAction = null; // 'createObra'
+let lastAction = null;
 
 function normalizeCity(v){
   const s = String(v||"").trim().toLowerCase();
@@ -637,7 +632,7 @@ function persistableState(){
 function saveState(){
   const pstate = persistableState();
   safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
-  try{ queueSaveToFirestore(pstate); }catch(_){ }
+  try{ queueSaveToFirestore(pstate); }catch(_){}
 }
 
 function safeName(obj){
@@ -731,34 +726,42 @@ function setTopbar(){
   const back = $("#btnBack");
 
   if(u){
-    chip.style.display = "inline-flex";
-    settingsBtn.style.display = "inline-flex";
-    chip.textContent = `${u.name} • ${u.role}`;
-    logout.style.display = "inline-flex";
-    if(nav.screen==="home" || nav.screen==="dash") back.style.display = "none";
-    else back.style.display = "inline-flex";
+    if(chip){
+      chip.style.display = "inline-flex";
+      chip.textContent = `${u.name} • ${u.role}`;
+    }
+    if(settingsBtn) settingsBtn.style.display = "inline-flex";
+    if(logout) logout.style.display = "inline-flex";
+    if(back) back.style.display = (nav.screen==="home" || nav.screen==="dash") ? "none" : "inline-flex";
   }else{
-    chip.style.display = "none";
-    settingsBtn.style.display = "none";
-    logout.style.display = "none";
-    back.style.display = "none";
+    if(chip) chip.style.display = "none";
+    if(settingsBtn) settingsBtn.style.display = "none";
+    if(logout) logout.style.display = "none";
+    if(back) back.style.display = "none";
   }
 
-  if(logout) logout.onclick = ()=>{
-    setSessionUserId("");
-    goto("login");
-  };
+  if(logout){
+    logout.onclick = ()=>{
+      setSessionUserId("");
+      goto("login");
+    };
+  }
 
-  if(back) back.onclick = ()=>{
-    const u = currentUser();
-    if(!u) return goto("login");
-    if(nav.screen==="apto") return goto("obra", { obraId: nav.params.obraId });
-    if(nav.screen==="obra") return goto(canViewOnly(u) ? "dash" : "home");
-    if(nav.screen==="users") return goto(canViewOnly(u) ? "dash" : "home");
-    if(nav.screen==="settings") return goto(canViewOnly(u) ? "dash" : "home");
-    if(nav.screen==="dash") return goto("home");
-    goto("home");
-  };
+  if(back){
+    back.onclick = ()=>{
+      const u = currentUser();
+      if(!u) return goto("login");
+      if(nav.screen==="apto"){
+        if(nav.params.apto) return goto("apto", { obraId: nav.params.obraId, blockId: nav.params.blockId });
+        return goto("obra", { obraId: nav.params.obraId });
+      }
+      if(nav.screen==="obra") return goto(canViewOnly(u) ? "dash" : "home");
+      if(nav.screen==="users") return goto(canViewOnly(u) ? "dash" : "home");
+      if(nav.screen==="settings") return goto(canViewOnly(u) ? "dash" : "home");
+      if(nav.screen==="dash") return goto("home");
+      goto("home");
+    };
+  }
 
   if(settingsBtn){
     settingsBtn.onclick = ()=>{
@@ -827,7 +830,10 @@ function calcObraStats(obraId){
       const a = getApartmentView(obraId, b.id, an);
       total++;
       const ps = a.pendencias||[];
-      if(ps.length===0){ semVistoria++; return; }
+      if(ps.length===0){
+        semVistoria++;
+        return;
+      }
 
       let hasPend=false, hasWait=false, hasConf=false;
       ps.forEach(p=>{
@@ -1476,7 +1482,6 @@ function renderAptoDetalhe(root){
   const u = currentUser();
   const { obraId, blockId, apto } = nav.params;
   const obra = state.obras[obraId];
-  const block = obra.blocks[blockId];
   const apt = getOrMakeApartment(obraId, blockId, apto);
 
   const canAdd = canCreate(u);
