@@ -97,6 +97,7 @@ function fmtDT(iso){
     return String(iso);
   }
 }
+
 function readImageAsDataURL(file){
   return new Promise((resolve,reject)=>{
     const r=new FileReader();
@@ -248,6 +249,41 @@ function ensureAptPath(obraId, blockId, apto){
   return state.obras[obraId].blocks[blockId].apartments[String(apto)];
 }
 
+function apartmentStrength(apt){
+  if(!apt) return 0;
+  const p = Array.isArray(apt.pendencias) ? apt.pendencias.length : 0;
+  const f = Array.isArray(apt.photos) ? apt.photos.length : 0;
+  return (p * 1000) + f;
+}
+
+function aptUpdatedMs(apt){
+  if(!apt) return 0;
+  const metaTs = Number(apt?._meta?.updatedAtMs || 0);
+  let maxTs = metaTs;
+  for(const p of (apt.pendencias||[])){
+    const ts = Date.parse(p.updatedAt || p.approvedAt || p.reviewedAt || p.doneAt || p.createdAt || 0) || 0;
+    if(ts > maxTs) maxTs = ts;
+  }
+  return maxTs;
+}
+
+function shouldReplaceLocalApartment(localApt, incomingDoc){
+  if(!localApt) return true;
+  const incomingApt = {
+    pendencias: Array.isArray(incomingDoc?.pendencias) ? incomingDoc.pendencias : [],
+    photos: Array.isArray(incomingDoc?.photos) ? incomingDoc.photos : [],
+    _meta: { updatedAtMs: Number(incomingDoc?.updatedAtMs || 0) }
+  };
+  const localStrength = apartmentStrength(localApt);
+  const incomingStrength = apartmentStrength(incomingApt);
+  const localTs = aptUpdatedMs(localApt);
+  const incomingTs = aptUpdatedMs(incomingApt);
+
+  if(incomingStrength > localStrength) return true;
+  if(incomingStrength < localStrength) return false;
+  return incomingTs >= localTs;
+}
+
 function applyApartmentFromDoc(doc){
   try{
     if(!doc) return;
@@ -256,6 +292,7 @@ function applyApartmentFromDoc(doc){
     const apto = String(doc.apto);
     if(!obraId || !blockId || !apto) return;
     const target = ensureAptPath(obraId, blockId, apto);
+    if(!shouldReplaceLocalApartment(target, doc)) return;
     target.pendencias = Array.isArray(doc.pendencias) ? doc.pendencias : (target.pendencias||[]);
     target.photos = Array.isArray(doc.photos) ? doc.photos : (target.photos||[]);
     if(!target._meta) target._meta = {};
@@ -289,6 +326,7 @@ let lastRemoteTs = 0;
 let isApplyingRemote = false;
 let saveTimer = null;
 let lastAction = null;
+let migrationRunning = false;
 
 function normalizeCity(v){
   const s = String(v||"").trim().toLowerCase();
@@ -567,6 +605,81 @@ function persistableState(){
   const copy = JSON.parse(JSON.stringify(state));
   if(copy && copy.session) delete copy.session;
   return copy;
+}
+
+async function syncAllApartmentsToFirestoreFromLocal(){
+  if(!fbReady || migrationRunning) return;
+  migrationRunning = true;
+  try{
+    ensureSystemDefaults();
+    const now = Date.now();
+
+    let opCount = 0;
+    let batch = fbDb.batch();
+
+    for(const obraId of Object.keys(state.obras||{})){
+      const obra = state.obras[obraId];
+      for(const blockId of Object.keys(obra.blocks||{})){
+        const block = obra.blocks[blockId];
+        for(const apto of Object.keys(block.apartments||{})){
+          const apt = block.apartments[apto];
+          const hasPend = Array.isArray(apt.pendencias) && apt.pendencias.length > 0;
+          const hasPhotos = Array.isArray(apt.photos) && apt.photos.length > 0;
+
+          if(!hasPend && !hasPhotos) continue;
+
+          const ref = fbDb
+            .collection("apps")
+            .doc("bela_mares_checklist")
+            .collection(APARTMENTS_COLLECTION)
+            .doc(makeAptDocId(obraId, blockId, apto));
+
+          batch.set(ref, {
+            obraId,
+            obraName: obra.name || obraId,
+            blockId,
+            apto: String(apto),
+            pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
+            photos: Array.isArray(apt.photos) ? apt.photos : [],
+            updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+            updatedAtMs: now,
+            migratedFromLocal: true
+          }, { merge:true });
+
+          opCount++;
+
+          if(opCount >= 400){
+            await batch.commit();
+            batch = fbDb.batch();
+            opCount = 0;
+          }
+        }
+      }
+    }
+
+    if(opCount > 0){
+      await batch.commit();
+    }
+
+    const metaRef = fbDb
+      .collection("apps")
+      .doc("bela_mares_checklist")
+      .collection("state")
+      .doc("meta");
+
+    await metaRef.set({
+      updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAtMs: now,
+      meta: JSON.stringify(persistableMetaState()),
+      localMigrationAtMs: now
+    }, { merge:true });
+
+    console.log("Migração local -> Firestore concluída.");
+  }catch(e){
+    console.error("Falha ao migrar apartments locais para Firestore:", e);
+  }finally{
+    migrationRunning = false;
+  }
 }
 
 function saveState(){
@@ -1671,3 +1784,8 @@ function renderSettings(root){
 ensureSystemDefaults();
 initFirestore();
 render();
+
+window.forceSyncLocalToFirestore = async function(){
+  await syncAllApartmentsToFirestoreFromLocal();
+  toast("Sincronização local enviada ao Firestore.");
+};
