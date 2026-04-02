@@ -565,9 +565,27 @@ function initFirestore(){
       try{
         const parsed = JSON.parse(data.meta);
         if(parsed && typeof parsed === "object"){
+          const prevObras = state.obras || {};
+          const remoteObras = (parsed.obras && typeof parsed.obras === "object") ? parsed.obras : {};
+          const nextObras = {};
+
+          for(const oid of Object.keys(remoteObras)){
+            const incoming = remoteObras[oid] || {};
+            const prev = prevObras[oid] || {};
+            nextObras[oid] = {
+              ...incoming,
+              blocks: prev.blocks || incoming.blocks || {}
+            };
+            if(prev.name && !nextObras[oid].name) nextObras[oid].name = prev.name;
+            if(prev.city && !nextObras[oid].city) nextObras[oid].city = prev.city;
+            if(prev.config && !nextObras[oid].config) nextObras[oid].config = prev.config;
+          }
+
           state.users = Array.isArray(parsed.users) ? parsed.users : (state.users || []);
-          state.obras = (parsed.obras && typeof parsed.obras === "object") ? parsed.obras : {};
-          state.obras_index = Array.isArray(parsed.obras_index) ? parsed.obras_index : [];
+          state.obras = nextObras;
+          state.obras_index = Array.isArray(parsed.obras_index)
+            ? mergeObrasIndexLists([], parsed.obras_index)
+            : mergeObrasIndexLists([], Object.values(nextObras).map(o => ({ id:o.id, name:o.name, city:o.city, config:o.config })));
         }
 
         ensureSystemDefaults();
@@ -921,7 +939,7 @@ function renderDash(root){
             <th style="text-align:center">Sem vistoria</th>
             <th style="text-align:center">Com pendência</th>
             <th style="text-align:center">Aguardando</th>
-            <th style="text-align:center">Conferido</th>
+                        <th style="text-align:center">Conferido</th>
             <th style="text-align:center">Concluído</th>
             <th></th>
           </tr>
@@ -932,7 +950,7 @@ function renderDash(root){
               <td><b>${esc(s.name)}</b></td>
               <td style="text-align:center"><b>${s.total}</b></td>
               <td style="text-align:center"><b>${s.semVistoria}</b></td>
-                            <td style="text-align:center"><b>${s.pend}</b></td>
+              <td style="text-align:center"><b>${s.pend}</b></td>
               <td style="text-align:center"><b>${s.aguard}</b></td>
               <td style="text-align:center"><b>${s.conferido}</b></td>
               <td style="text-align:center"><b>${s.conclu}</b></td>
