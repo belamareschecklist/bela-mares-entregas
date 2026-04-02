@@ -98,7 +98,7 @@ function safeSetItem(key, value){
   }catch(e){
     console.warn("LocalStorage cheio. Cache local desativado.", e);
     localSaveDisabled = true;
-    try{ localStorage.removeItem(key); }catch(_){ }
+    try{ localStorage.removeItem(key); }catch(_){}
   }
 }
 
@@ -219,8 +219,24 @@ function persistableState(){
 
 function persistableStateForLocal(){
   const s = persistableState();
-  try{ stripLargeFields(s); }catch(_){ }
+  try{ stripLargeFields(s); }catch(_){}
   return s;
+}
+
+function ensureBlockAndApartmentStructure(obra){
+  if(!obra) return;
+  obra.config = obra.config || { numBlocks: 0, aptsPerBlock: 12 };
+  obra.blocks = obra.blocks || {};
+  const totalBlocks = Number(obra.config.numBlocks || Object.keys(obra.blocks).length || 0);
+  const nums = aptNumsByConfig(obra.config.aptsPerBlock || 12);
+  for(let i=1;i<=totalBlocks;i++){
+    const bid = "B" + i;
+    if(!obra.blocks[bid]) obra.blocks[bid] = { id: bid, apartments: {} };
+    obra.blocks[bid].apartments = obra.blocks[bid].apartments || {};
+    nums.forEach(an=>{
+      if(!obra.blocks[bid].apartments[an]) obra.blocks[bid].apartments[an] = { num: an, pendencias: [], photos: [], _meta: {} };
+    });
+  }
 }
 
 function ensureSystemDefaults(){
@@ -247,6 +263,7 @@ function ensureSystemDefaults(){
     obra.city = normalizeCity(obra.city || "valparaiso");
     obra.config = obra.config || { numBlocks: Object.keys(obra.blocks || {}).length || 0, aptsPerBlock: 12 };
     obra.blocks = obra.blocks || {};
+    ensureBlockAndApartmentStructure(obra);
     for(const bid of Object.keys(obra.blocks)){
       const block = obra.blocks[bid];
       block.apartments = block.apartments || {};
@@ -538,7 +555,7 @@ function initFirestore(){
     fbReady = true;
 
     const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
-    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){ }
+    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
     fbMetaUnsub = metaRef.onSnapshot((snap)=>{
       if(!snap || !snap.exists) return;
 
@@ -548,25 +565,9 @@ function initFirestore(){
       try{
         const parsed = JSON.parse(data.meta);
         if(parsed && typeof parsed === "object"){
-          if(parsed.users) state.users = parsed.users;
-
-          if(parsed.obras){
-            for(const oid of Object.keys(parsed.obras || {})){
-              const incoming = parsed.obras[oid];
-              if(!state.obras[oid]) state.obras[oid] = incoming;
-              else{
-                state.obras[oid].id = incoming.id || state.obras[oid].id;
-                state.obras[oid].name = incoming.name || state.obras[oid].name;
-                state.obras[oid].city = normalizeCity(incoming.city || state.obras[oid].city || "valparaiso");
-                state.obras[oid].config = incoming.config || state.obras[oid].config;
-                state.obras[oid].blocks = state.obras[oid].blocks || incoming.blocks || {};
-              }
-            }
-          }
-
-          if(parsed.obras_index){
-            state.obras_index = mergeObrasIndexLists(state.obras_index, parsed.obras_index);
-          }
+          state.users = Array.isArray(parsed.users) ? parsed.users : (state.users || []);
+          state.obras = (parsed.obras && typeof parsed.obras === "object") ? parsed.obras : {};
+          state.obras_index = Array.isArray(parsed.obras_index) ? parsed.obras_index : [];
         }
 
         ensureSystemDefaults();
@@ -578,7 +579,7 @@ function initFirestore(){
     });
 
     const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
-    if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){ }
+    if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
     fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
       if(!qs) return;
 
@@ -859,7 +860,7 @@ function renderLogin(root){
     const pin = ($("#loginPin").value || "").trim();
     const found = state.users.find(u=>u.id===user && u.pin===pin && u.active);
     if(!found) return toast("Usuário/PIN inválido.");
-    setSessionUserId(found.id);
+        setSessionUserId(found.id);
     goto(canViewOnly(found) ? "dash" : "home");
   };
 }
@@ -1174,6 +1175,10 @@ function deleteObra(obraId){
   delete state.obras[obraId];
   state.obras_index = state.obras_index.filter(o=>o.id !== obraId);
   state.users = state.users.filter(u => !(u.role === "execucao" && (u.obraIds || []).includes(obraId)));
+  if(nav.params && nav.params.obraId === obraId){
+    nav.screen = canViewOnly(currentUser() || {}) ? "dash" : "home";
+    nav.params = {};
+  }
 }
 
 function pushEvent(p, type, u, extra){
@@ -1461,6 +1466,7 @@ function renderAptoDetalhe(root){
     };
   });
 }
+
 
 function renderObra(root){
   const u = currentUser();
