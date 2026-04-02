@@ -1,5 +1,5 @@
-const APP_VERSION = "workflow-v5";
-const STATE_VERSION = 29;
+const APP_VERSION = "workflow-v6";
+const STATE_VERSION = 30;
 
 const STORAGE_KEY = "bm_checklist_classic_v1";
 const SESSION_KEY = "bm_checklist_session_user";
@@ -22,8 +22,6 @@ const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
 let localSaveDisabled = false;
 let saveTimer = null;
-let fullSyncTimer = null;
-let autoSyncStarted = false;
 let isApplyingRemote = false;
 
 let fbApp = null;
@@ -230,30 +228,19 @@ function ensureSystemDefaults(){
   state.obras_index = state.obras_index || [];
   state.users = state.users || [];
 
-  if(!state.users.find(u=>u.id==="supervisor_01")){
-    state.users.push({ id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="qualidade_valparaiso")){
-    state.users.push({ id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="qualidade_aguaslindas")){
-    state.users.push({ id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:["*"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="exec_costa_rica")){
-    state.users.push({ id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="exec_costa_brava")){
-    state.users.push({ id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="coordenador")){
-    state.users.push({ id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="engenheiro")){
-    state.users.push({ id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true });
-  }
-  if(!state.users.find(u=>u.id==="diretor")){
-    state.users.push({ id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true });
-  }
+  const defaults = [
+    { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
+    { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
+    { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
+    { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
+    { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
+    { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+    { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
+    { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true }
+  ];
+  defaults.forEach(d=>{
+    if(!state.users.find(u=>u.id===d.id)) state.users.push(d);
+  });
 
   for(const oid of Object.keys(state.obras)){
     const obra = state.obras[oid];
@@ -344,9 +331,7 @@ function aptUpdatedMs(apt){
   const metaTs = Number(apt?._meta?.updatedAtMs || 0);
   let maxTs = metaTs;
   for(const p of (apt.pendencias || [])){
-    const ts = Date.parse(
-      p.updatedAt || p.approvedAt || p.reviewedAt || p.doneAt || p.createdAt || 0
-    ) || 0;
+    const ts = Date.parse(p.updatedAt || p.approvedAt || p.reviewedAt || p.doneAt || p.createdAt || 0) || 0;
     if(ts > maxTs) maxTs = ts;
   }
   return maxTs;
@@ -460,90 +445,6 @@ function persistLocal(){
   safeSetItem(STORAGE_KEY, JSON.stringify(persistableStateForLocal()));
 }
 
-function queueSaveToFirestore(){
-  if(!fbReady) return;
-  if(saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async ()=>{
-    if(isApplyingRemote) return;
-    const now = Date.now();
-
-    try{
-      const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
-      await metaRef.set({
-        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-        updatedAtMs: now,
-        meta: JSON.stringify(persistableMetaState())
-      }, { merge:true });
-    }catch(e){
-      console.error("Erro salvando meta:", e);
-    }
-
-    queueFullAutoSync();
-  }, 350);
-}
-
-function queueFullAutoSync(){
-  if(!fbReady) return;
-  if(fullSyncTimer) clearTimeout(fullSyncTimer);
-  fullSyncTimer = setTimeout(async ()=>{
-    await syncAllApartmentsToFirestoreFromLocal();
-  }, 700);
-}
-
-async function syncAllApartmentsToFirestoreFromLocal(){
-  if(!fbReady || migrationRunning) return;
-  migrationRunning = true;
-  try{
-    const now = Date.now();
-    let opCount = 0;
-    let batch = fbDb.batch();
-
-    for(const obraId of Object.keys(state.obras || {})){
-      const obra = state.obras[obraId];
-      for(const blockId of Object.keys(obra.blocks || {})){
-        const block = obra.blocks[blockId];
-        for(const apto of Object.keys(block.apartments || {})){
-          const apt = block.apartments[apto];
-          const hasPend = Array.isArray(apt.pendencias) && apt.pendencias.length > 0;
-          const hasPhotos = Array.isArray(apt.photos) && apt.photos.length > 0;
-          if(!hasPend && !hasPhotos) continue;
-
-          const ref = fbDb
-            .collection("apps").doc("bela_mares_checklist")
-            .collection(APARTMENTS_COLLECTION)
-            .doc(makeAptDocId(obraId, blockId, apto));
-
-          batch.set(ref, {
-            obraId,
-            obraName: obra.name || obraId,
-            blockId,
-            apto: String(apto),
-            pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
-            photos: Array.isArray(apt.photos) ? apt.photos : [],
-            updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-            updatedAtMs: Math.max(now, Number(apt?._meta?.updatedAtMs || 0))
-          }, { merge:true });
-
-          opCount++;
-          if(opCount >= 400){
-            await batch.commit();
-            batch = fbDb.batch();
-            opCount = 0;
-          }
-        }
-      }
-    }
-
-    if(opCount > 0){
-      await batch.commit();
-    }
-  }catch(e){
-    console.error("Falha ao sincronizar apartments:", e);
-  }finally{
-    migrationRunning = false;
-  }
-}
-
 function persistableMetaState(){
   const copy = persistableState();
   if(copy && copy.obras){
@@ -559,17 +460,71 @@ function persistableMetaState(){
   return copy;
 }
 
+function queueSaveToFirestore(){
+  if(!fbReady) return;
+  if(saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    if(isApplyingRemote) return;
+    const now = Date.now();
+    try{
+      const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
+      await metaRef.set({
+        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAtMs: now,
+        meta: JSON.stringify(persistableMetaState())
+      }, { merge:true });
+    }catch(e){
+      console.error("Erro salvando meta:", e);
+    }
+  }, 250);
+}
+
+async function saveApartmentNowToFirestore(obraId, blockId, apto){
+  if(!fbReady) return;
+  const apt = ensureAptPath(obraId, blockId, apto);
+  const obra = state.obras?.[obraId];
+  const now = Date.now();
+
+  const ref = fbDb
+    .collection("apps")
+    .doc("bela_mares_checklist")
+    .collection(APARTMENTS_COLLECTION)
+    .doc(makeAptDocId(obraId, blockId, apto));
+
+  await ref.set({
+    obraId,
+    obraName: obra?.name || obraId,
+    blockId,
+    apto: String(apto),
+    pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
+    photos: Array.isArray(apt.photos) ? apt.photos : [],
+    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAtMs: now
+  }, { merge:true });
+
+  if(!apt._meta) apt._meta = {};
+  apt._meta.updatedAtMs = now;
+}
+
+async function saveMetaNowToFirestore(){
+  if(!fbReady) return;
+  const now = Date.now();
+  const metaRef = fbDb
+    .collection("apps")
+    .doc("bela_mares_checklist")
+    .collection("state")
+    .doc("meta");
+
+  await metaRef.set({
+    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAtMs: now,
+    meta: JSON.stringify(persistableMetaState())
+  }, { merge:true });
+}
+
 function saveState(){
   persistLocal();
   queueSaveToFirestore();
-}
-
-function startAutomaticSyncIfNeeded(){
-  if(autoSyncStarted || !fbReady) return;
-  autoSyncStarted = true;
-  setTimeout(()=>{
-    syncAllApartmentsToFirestoreFromLocal();
-  }, 1200);
 }
 
 function initFirestore(){
@@ -586,7 +541,6 @@ function initFirestore(){
     if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
     fbMetaUnsub = metaRef.onSnapshot((snap)=>{
       if(!snap || !snap.exists) return;
-      if(snap.metadata && snap.metadata.hasPendingWrites) return;
 
       const data = snap.data() || {};
       if(!data.meta) return;
@@ -627,7 +581,6 @@ function initFirestore(){
     if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
     fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
       if(!qs) return;
-      if(qs.metadata && qs.metadata.hasPendingWrites) return;
 
       isApplyingRemote = true;
       try{
@@ -642,8 +595,6 @@ function initFirestore(){
         isApplyingRemote = false;
       }
     });
-
-    startAutomaticSyncIfNeeded();
   }catch(e){
     console.warn("Falha ao iniciar Firestore:", e);
   }
@@ -758,9 +709,9 @@ function aptStatusClass(obraId, blockId, an){
   if(!ps.length) return "";
   let hasPend=false, hasWait=false, hasConf=false;
   ps.forEach(p=>{
-    if(p.state === "pendente" || p.state === "reprovado") hasPend=true;
-    else if(p.state === "feito") hasWait=true;
-    else if(p.state === "conferido") hasConf=true;
+    if(p.state==="pendente" || p.state==="reprovado") hasPend=true;
+    else if(p.state==="feito") hasWait=true;
+    else if(p.state==="conferido") hasConf=true;
   });
   if(hasPend) return "dot dot--r";
   if(hasWait) return "dot dot--o";
@@ -1225,196 +1176,6 @@ function deleteObra(obraId){
   state.users = state.users.filter(u => !(u.role === "execucao" && (u.obraIds || []).includes(obraId)));
 }
 
-function renderUsers(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-  if(!canManageUsers(u) && !canViewOnly(u)) return goto("home");
-
-  const users = (state.users || []).filter(x=>x && x.active);
-  root.innerHTML = `
-    <div class="card">
-      <div class="row">
-        <div><div class="h1">Usuários</div><div class="small">Gerencie logins</div></div>
-        <div class="row" style="gap:8px">
-          <button id="btnBackUsers" class="btn">Voltar</button>
-          ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
-        </div>
-      </div>
-      <div class="hr"></div>
-
-      <table class="table">
-        <thead>
-          <tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Acesso</th><th>PIN</th></tr>
-        </thead>
-        <tbody>
-          ${users.map(x=>{
-            const access = x.role === "qualidade"
-              ? (x.id === "qualidade_aguaslindas" ? "Águas Lindas" : "Valparaíso")
-              : ((x.obraIds || [])[0] === "*" ? "Todas" : (x.obraIds || []).join(", "));
-            return `
-              <tr>
-                <td><b>${esc(x.id)}</b></td>
-                <td>${esc(x.name)}</td>
-                <td>${esc(x.role)}</td>
-                <td>${esc(access)}</td>
-                <td>${esc(x.pin)}</td>
-              </tr>
-            `;
-          }).join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  $("#btnBackUsers").onclick = ()=> goto(canViewOnly(u) ? "dash" : "home");
-
-  const btnAddSup = $("#btnAddSup");
-  if(btnAddSup){
-    btnAddSup.onclick = ()=>{
-      const { backdrop, close } = openModal(`
-        <div class="modal">
-          <div class="row">
-            <div><div class="h2">Novo supervisor</div></div>
-            <button class="btn btn--ghost" id="mClose">✕</button>
-          </div>
-          <div class="hr"></div>
-          <div class="grid">
-            <div><div class="small">Usuário</div><input id="mUser" class="input" placeholder="Ex.: supervisor_02" /></div>
-            <div><div class="small">Nome</div><input id="mName" class="input" placeholder="Ex.: Supervisor 02" /></div>
-            <div><div class="small">PIN</div><input id="mPin" class="input" maxlength="4" placeholder="Ex.: 4444" /></div>
-            <div class="row" style="justify-content:flex-end"><button id="mCreate" class="btn btn--orange">Criar</button></div>
-          </div>
-        </div>
-      `);
-
-      $("#mClose", backdrop).onclick = close;
-      $("#mCreate", backdrop).onclick = ()=>{
-        const id = ($("#mUser", backdrop).value || "").trim().toLowerCase();
-        const name = ($("#mName", backdrop).value || "").trim();
-        const pin = ($("#mPin", backdrop).value || "").trim();
-
-        if(!id || !name || !pin) return toast("Preencha usuário, nome e PIN.");
-        if(state.users.find(x=>x.id === id)) return toast("Usuário já existe.");
-
-        state.users.push({ id, name, role:"supervisor", pin, obraIds:["*"], active:true });
-        saveState();
-        close();
-        renderUsers(root);
-        toast("Supervisor criado.");
-      };
-    };
-  }
-}
-
-function renderObra(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-
-  const obraId = nav.params.obraId;
-  const obra = state.obras[obraId];
-  if(!obra){
-    toast("Obra não encontrada.");
-    return goto(canViewOnly(u) ? "dash" : "home");
-  }
-
-  if(!canAccessObra(u, obraId)){
-    toast("Sem acesso a essa obra.");
-    return goto(canViewOnly(u) ? "dash" : "home");
-  }
-
-  const blocks = Object.values(obra.blocks || {}).sort((a,b)=>
-    Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B",""))
-  );
-
-  const cfg = obra.config || { numBlocks: blocks.length || 0, aptsPerBlock: 0 };
-
-  root.innerHTML = `
-    <div class="card">
-      <div class="row">
-        <div>
-          <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
-            <div class="h1">${esc(obra.name || obra.id || "Obra")}</div>
-            <span class="badge" style="background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#fff;border:none;text-transform:uppercase">${normalizeCity(obra.city)==="aguaslindas" ? "Águas Lindas" : "Valparaíso"}</span>
-          </div>
-          <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
-        </div>
-      </div>
-      <div class="hr"></div>
-
-      <div class="grid blocks-grid">
-        ${blocks.map(block=>`
-          <button class="block-card" data-open-block="${esc(block.id)}">
-            <div class="block-card__title">${esc(block.id)}</div>
-            <div class="pills">${blockDots(obraId, block)}</div>
-          </button>
-        `).join("")}
-      </div>
-    </div>
-  `;
-
-  $$('[data-open-block]').forEach(btn=>{
-    btn.onclick = ()=>{
-      goto("apto", { obraId, blockId: btn.getAttribute("data-open-block") });
-    };
-  });
-}
-
-function renderApto(root){
-  const u = currentUser();
-  if(!u) return goto("login");
-
-  const obraId = nav.params.obraId;
-  const blockId = nav.params.blockId;
-  const obra = state.obras[obraId];
-  const block = obra?.blocks?.[blockId];
-  if(!obra || !block) return goto(canViewOnly(u) ? "dash" : "home");
-
-  const aptNums = aptNumsForBlock(obra, block);
-
-  root.innerHTML = `
-    <div class="card">
-      <div class="row">
-        <div>
-          <div class="h1">${esc(obra.name)} • ${esc(blockId)}</div>
-          <div class="small">Cidade: ${normalizeCity(obra.city)==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} • Selecione o apartamento</div>
-        </div>
-      </div>
-      <div class="hr"></div>
-
-      <div class="grid apt-grid">
-        ${aptNums.map(an=>{
-          const a = getOrMakeApartment(obraId, blockId, an);
-          const ps = a.pendencias || [];
-          let cls = "apt";
-          if(ps.length){
-            let hasPend=false, hasWait=false, hasConf=false;
-            ps.forEach(p=>{
-              if(p.state==="pendente" || p.state==="reprovado") hasPend=true;
-              else if(p.state==="feito") hasWait=true;
-              else if(p.state==="conferido") hasConf=true;
-            });
-            if(hasPend) cls += " apt--pend";
-            else if(hasWait) cls += " apt--wait";
-            else if(hasConf) cls += " apt--conf";
-            else cls += " apt--ok";
-          }
-          const dotCls = aptStatusClass(obraId, blockId, an);
-          return `<button class="${cls}" data-open-apt="${esc(an)}">${dotCls ? `<span class="${dotCls}" style="margin-right:6px"></span>` : ``}${esc(an)}</button>`;
-        }).join("")}
-      </div>
-    </div>
-  `;
-
-  $$('[data-open-apt]').forEach(btn=>{
-    btn.onclick = ()=>{
-      goto("apto", { obraId, blockId, apto: btn.getAttribute("data-open-apt") });
-      renderAptoDetalhe(root);
-    };
-  });
-
-  if(nav.params.apto) return renderAptoDetalhe(root);
-}
-
 function pushEvent(p, type, u, extra){
   if(!p.events) p.events = [];
   p.events.push(Object.assign({
@@ -1436,6 +1197,19 @@ function fmtEvent(ev){
   if(ev.type==="editado") return `Editado: <b>${at}</b> por <b>${esc(who)}</b>`;
   if(ev.type==="apagado") return `Apagado: <b>${at}</b> por <b>${esc(who)}</b>`;
   return `${esc(ev.type)} — ${at}`;
+}
+
+async function syncAptAndRefresh(obraId, blockId, apto, onDone, successMsg){
+  try{
+    saveState();
+    await saveApartmentNowToFirestore(obraId, blockId, apto);
+    await saveMetaNowToFirestore();
+    if(typeof onDone === "function") onDone();
+    if(successMsg) toast(successMsg);
+  }catch(e){
+    console.error(e);
+    toast("Erro ao sincronizar.");
+  }
 }
 
 function renderAptoDetalhe(root){
@@ -1538,10 +1312,15 @@ function renderAptoDetalhe(root){
         pushEvent(p, "criado", currentUser());
         apt.pendencias.push(p);
         apt._meta.updatedAtMs = Date.now();
-        saveState();
-        close();
-        renderAptoDetalhe(root);
-        toast("Pendência adicionada.");
+
+        syncAptAndRefresh(
+          obraId, blockId, apto,
+          ()=>{
+            close();
+            renderAptoDetalhe(root);
+          },
+          "Pendência adicionada."
+        );
       };
     };
   }
@@ -1558,11 +1337,11 @@ function renderAptoDetalhe(root){
       p.approvedAt = null;
       p.approvedBy = null;
       p.rejection = null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "feito", currentUser());
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Marcado como feito.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Marcado como feito.");
     };
   });
 
@@ -1575,11 +1354,11 @@ function renderAptoDetalhe(root){
       p.reviewedBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
       p.approvedAt = null;
       p.approvedBy = null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "conferido", currentUser());
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Conferido.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Conferido.");
     };
   });
 
@@ -1595,11 +1374,11 @@ function renderAptoDetalhe(root){
       p.reviewedBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
       p.approvedAt = null;
       p.approvedBy = null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "reprovado", currentUser(), { note: p.rejection });
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Reprovado.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Reprovado.");
     };
   });
 
@@ -1610,11 +1389,11 @@ function renderAptoDetalhe(root){
       p.state = "concluido";
       p.approvedAt = new Date().toISOString();
       p.approvedBy = currentUser() ? { id:currentUser().id, name:currentUser().name, role:currentUser().role } : null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "aprovado", currentUser());
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Aprovado.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Aprovado.");
     };
   });
 
@@ -1628,11 +1407,11 @@ function renderAptoDetalhe(root){
       p.rejection = (note || "").trim();
       p.approvedAt = null;
       p.approvedBy = null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "reprovado", currentUser(), { note: p.rejection });
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Reprovado.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Reprovado.");
     };
   });
 
@@ -1646,11 +1425,11 @@ function renderAptoDetalhe(root){
       p.reviewedBy = null;
       p.approvedAt = null;
       p.approvedBy = null;
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "reaberto", currentUser());
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Reaberto.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Reaberto.");
     };
   });
 
@@ -1661,11 +1440,11 @@ function renderAptoDetalhe(root){
       const title = prompt("Editar descrição:", p.title || "");
       if(title === null) return;
       p.title = title.trim();
+      p.updatedAt = new Date().toISOString();
       pushEvent(p, "editado", currentUser());
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Editado.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Editado.");
     };
   });
 
@@ -1677,11 +1456,91 @@ function renderAptoDetalhe(root){
       pushEvent(p, "apagado", currentUser());
       apt.pendencias.splice(idx, 1);
       apt._meta.updatedAtMs = Date.now();
-      saveState();
-      renderAptoDetalhe(root);
-      toast("Apagado.");
+
+      syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Apagado.");
     };
   });
+}
+
+function renderUsers(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+  if(!canManageUsers(u) && !canViewOnly(u)) return goto("home");
+
+  const users = (state.users || []).filter(x=>x && x.active);
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div><div class="h1">Usuários</div><div class="small">Gerencie logins</div></div>
+        <div class="row" style="gap:8px">
+          <button id="btnBackUsers" class="btn">Voltar</button>
+          ${canCreateSupervisor(u) ? `<button id="btnAddSup" class="btn btn--orange">+ Supervisor</button>` : ``}
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <table class="table">
+        <thead>
+          <tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Acesso</th><th>PIN</th></tr>
+        </thead>
+        <tbody>
+          ${users.map(x=>{
+            const access = x.role === "qualidade"
+              ? (x.id === "qualidade_aguaslindas" ? "Águas Lindas" : "Valparaíso")
+              : ((x.obraIds || [])[0] === "*" ? "Todas" : (x.obraIds || []).join(", "));
+            return `
+              <tr>
+                <td><b>${esc(x.id)}</b></td>
+                <td>${esc(x.name)}</td>
+                <td>${esc(x.role)}</td>
+                <td>${esc(access)}</td>
+                <td>${esc(x.pin)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  $("#btnBackUsers").onclick = ()=> goto(canViewOnly(u) ? "dash" : "home");
+
+  const btnAddSup = $("#btnAddSup");
+  if(btnAddSup){
+    btnAddSup.onclick = ()=>{
+      const { backdrop, close } = openModal(`
+        <div class="modal">
+          <div class="row">
+            <div><div class="h2">Novo supervisor</div></div>
+            <button class="btn btn--ghost" id="mClose">✕</button>
+          </div>
+          <div class="hr"></div>
+          <div class="grid">
+            <div><div class="small">Usuário</div><input id="mUser" class="input" placeholder="Ex.: supervisor_02" /></div>
+            <div><div class="small">Nome</div><input id="mName" class="input" placeholder="Ex.: Supervisor 02" /></div>
+            <div><div class="small">PIN</div><input id="mPin" class="input" maxlength="4" placeholder="Ex.: 4444" /></div>
+            <div class="row" style="justify-content:flex-end"><button id="mCreate" class="btn btn--orange">Criar</button></div>
+          </div>
+        </div>
+      `);
+
+      $("#mClose", backdrop).onclick = close;
+      $("#mCreate", backdrop).onclick = ()=>{
+        const id = ($("#mUser", backdrop).value || "").trim().toLowerCase();
+        const name = ($("#mName", backdrop).value || "").trim();
+        const pin = ($("#mPin", backdrop).value || "").trim();
+
+        if(!id || !name || !pin) return toast("Preencha usuário, nome e PIN.");
+        if(state.users.find(x=>x.id === id)) return toast("Usuário já existe.");
+
+        state.users.push({ id, name, role:"supervisor", pin, obraIds:["*"], active:true });
+        saveState();
+        close();
+        renderUsers(root);
+        toast("Supervisor criado.");
+      };
+    };
+  }
 }
 
 function renderSettings(root){
