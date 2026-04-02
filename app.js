@@ -98,7 +98,7 @@ function safeSetItem(key, value){
   }catch(e){
     console.warn("LocalStorage cheio. Cache local desativado.", e);
     localSaveDisabled = true;
-    try{ localStorage.removeItem(key); }catch(_){}
+    try{ localStorage.removeItem(key); }catch(_){ }
   }
 }
 
@@ -219,7 +219,7 @@ function persistableState(){
 
 function persistableStateForLocal(){
   const s = persistableState();
-  try{ stripLargeFields(s); }catch(_){}
+  try{ stripLargeFields(s); }catch(_){ }
   return s;
 }
 
@@ -538,7 +538,7 @@ function initFirestore(){
     fbReady = true;
 
     const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
-    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
+    if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){ }
     fbMetaUnsub = metaRef.onSnapshot((snap)=>{
       if(!snap || !snap.exists) return;
 
@@ -578,7 +578,7 @@ function initFirestore(){
     });
 
     const aRef = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION);
-    if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){}
+    if(fbApartmentsUnsub) try{ fbApartmentsUnsub(); }catch(_){ }
     fbApartmentsUnsub = aRef.onSnapshot((qs)=>{
       if(!qs) return;
 
@@ -1459,6 +1459,111 @@ function renderAptoDetalhe(root){
 
       syncAptAndRefresh(obraId, blockId, apto, ()=>renderAptoDetalhe(root), "Apagado.");
     };
+  });
+}
+
+function renderObra(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obraId = nav.params.obraId;
+  const obra = state.obras[obraId];
+  if(!obra){
+    toast("Obra não encontrada.");
+    return goto(canViewOnly(u) ? "dash" : "home");
+  }
+
+  if(!canAccessObra(u, obraId)){
+    toast("Sem acesso a essa obra.");
+    return goto(canViewOnly(u) ? "dash" : "home");
+  }
+
+  const blocks = Object.values(obra.blocks || {}).sort((a,b)=>
+    Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B",""))
+  );
+  const cfg = obra.config || { numBlocks: blocks.length || 0, aptsPerBlock: 12 };
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+            <div class="h1">${esc(obra.name || obra.id || "Obra")}</div>
+            <span class="badge" style="background:linear-gradient(135deg,#0f172a,#1d4ed8);color:#fff;border:none;text-transform:uppercase">${normalizeCity(obra.city)==="aguaslindas" ? "Águas Lindas" : "Valparaíso"}</span>
+          </div>
+          <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="grid blocks-grid">
+        ${blocks.map(block=>`
+          <button class="block-card" data-open-block="${esc(block.id)}">
+            <div class="block-card__title">${esc(block.id)}</div>
+            <div class="pills">${blockDots(obraId, block)}</div>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+
+  $$('[data-open-block]').forEach(btn=>{
+    btn.onclick = ()=> goto("apto", { obraId, blockId: btn.getAttribute("data-open-block") });
+  });
+}
+
+function renderApto(root){
+  const u = currentUser();
+  if(!u) return goto("login");
+
+  const obraId = nav.params.obraId;
+  const blockId = nav.params.blockId;
+  const obra = state.obras[obraId];
+  const block = obra?.blocks?.[blockId];
+  if(!obra || !block) return goto(canViewOnly(u) ? "dash" : "home");
+
+  if(nav.params.apto){
+    return renderAptoDetalhe(root);
+  }
+
+  const aptNums = aptNumsForBlock(obra, block);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">${esc(obra.name)} • ${esc(blockId)}</div>
+          <div class="small">Cidade: ${normalizeCity(obra.city)==="aguaslindas" ? "Águas Lindas" : "Valparaíso"} • Selecione o apartamento</div>
+        </div>
+      </div>
+      <div class="hr"></div>
+
+      <div class="grid apt-grid">
+        ${aptNums.map(an=>{
+          const a = getOrMakeApartment(obraId, blockId, an);
+          const ps = a.pendencias || [];
+          let cls = "apt";
+          if(ps.length){
+            let hasPend=false, hasWait=false, hasConf=false;
+            ps.forEach(p=>{
+              if(p.state==="pendente" || p.state==="reprovado") hasPend=true;
+              else if(p.state==="feito") hasWait=true;
+              else if(p.state==="conferido") hasConf=true;
+            });
+            if(hasPend) cls += " apt--pend";
+            else if(hasWait) cls += " apt--wait";
+            else if(hasConf) cls += " apt--conf";
+            else cls += " apt--ok";
+          }
+          const dotCls = aptStatusClass(obraId, blockId, an);
+          return `<button class="${cls}" data-open-apt="${esc(an)}">${dotCls ? `<span class="${dotCls}" style="margin-right:6px"></span>` : ``}${esc(an)}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+
+  $$('[data-open-apt]').forEach(btn=>{
+    btn.onclick = ()=> goto("apto", { obraId, blockId, apto: btn.getAttribute("data-open-apt") });
   });
 }
 
