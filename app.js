@@ -445,7 +445,7 @@ function canAccessObra(u, obraId){
   if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return true;
   if(u.role === "execucao") return (u.obraIds || []).includes(obraId) || (u.obraIds || []).includes("*");
   if(u.role === "qualidade"){
-    const obra = state.obras?.[obraId];
+    const obra = state.obras?.[obraId] || state.obras_index.find(o=>o.id===obraId);
     const city = normalizeCity(obra?.city || "valparaiso");
     const cities = userCities(u);
     return cities.includes("*") || cities.includes(city);
@@ -571,6 +571,14 @@ function initFirestore(){
         }
 
         ensureSystemDefaults();
+        if(nav.screen === "obra" && nav.params?.obraId && !state.obras[nav.params.obraId]){
+          nav.screen = canViewOnly(currentUser() || {}) ? "dash" : "home";
+          nav.params = {};
+        }
+        if(nav.screen === "apto" && nav.params?.obraId && !state.obras[nav.params.obraId]){
+          nav.screen = canViewOnly(currentUser() || {}) ? "dash" : "home";
+          nav.params = {};
+        }
         persistLocal();
         render();
       }catch(e){
@@ -924,7 +932,7 @@ function renderDash(root){
               <td><b>${esc(s.name)}</b></td>
               <td style="text-align:center"><b>${s.total}</b></td>
               <td style="text-align:center"><b>${s.semVistoria}</b></td>
-              <td style="text-align:center"><b>${s.pend}</b></td>
+                            <td style="text-align:center"><b>${s.pend}</b></td>
               <td style="text-align:center"><b>${s.aguard}</b></td>
               <td style="text-align:center"><b>${s.conferido}</b></td>
               <td style="text-align:center"><b>${s.conclu}</b></td>
@@ -1073,7 +1081,7 @@ function renderHome(root){
       `);
 
       $("#mClose", backdrop).onclick = close;
-      $("#mAddObra", backdrop).onclick = ()=>{
+      $("#mAddObra", backdrop).onclick = async ()=>{
         const name = ($("#mObraNome", backdrop).value || "").trim();
         const customId = ($("#mObraId", backdrop).value || "").trim();
         const execUser = ($("#mExecUser", backdrop).value || "").trim().toLowerCase();
@@ -1089,7 +1097,13 @@ function renderHome(root){
         const r = addObra(finalId, name, blocks, apts, city, execUser, execPin);
         if(!r.ok) return toast(r.msg || "Falha ao adicionar obra.");
 
-        saveState();
+        try{
+          persistLocal();
+          await saveMetaNowToFirestore();
+        }catch(e){
+          console.error(e);
+          saveState();
+        }
         close();
         renderHome(root);
         toast("Obra criada.");
@@ -1098,15 +1112,18 @@ function renderHome(root){
   }
 
   $$('button[data-del]').forEach(btn=>{
-    btn.onclick = ()=>{
+    btn.onclick = async ()=>{
       const obraId = btn.getAttribute("data-del");
       const obra = state.obras[obraId];
       const ok = confirm(`Apagar a obra "${obra?.name || obraId}"?`);
       if(!ok) return;
-      deleteObra(obraId);
-      saveState();
-      renderHome(root);
-      toast("Obra apagada.");
+      try{
+        await deleteObraAndSync(obraId);
+        renderHome(root);
+        toast("Obra apagada.");
+      }catch(e){
+        toast("Erro ao apagar obra.");
+      }
     };
   });
 
@@ -1178,6 +1195,38 @@ function deleteObra(obraId){
   if(nav.params && nav.params.obraId === obraId){
     nav.screen = canViewOnly(currentUser() || {}) ? "dash" : "home";
     nav.params = {};
+  }
+}
+
+async function deleteObraAndSync(obraId){
+  const obra = state.obras[obraId];
+  deleteObra(obraId);
+  persistLocal();
+  try{
+    if(fbReady && obra){
+      let batch = fbDb.batch();
+      let opCount = 0;
+      for(const block of Object.values(obra.blocks || {})){
+        for(const apto of Object.keys(block.apartments || {})){
+          const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION).doc(makeAptDocId(obraId, block.id, apto));
+          batch.delete(ref);
+          opCount++;
+          if(opCount >= 400){
+            await batch.commit();
+            batch = fbDb.batch();
+            opCount = 0;
+          }
+        }
+      }
+      if(opCount > 0) await batch.commit();
+      await saveMetaNowToFirestore();
+    } else {
+      saveState();
+    }
+  }catch(e){
+    console.error("Erro ao apagar obra:", e);
+    saveState();
+    throw e;
   }
 }
 
@@ -1291,7 +1340,7 @@ function renderAptoDetalhe(root){
       `);
 
       $("#mClose", backdrop).onclick = close;
-      $("#mCreate", backdrop).onclick = ()=>{
+      $("#mCreate", backdrop).onclick = async ()=>{
         const title = ($("#mTitle", backdrop).value || "").trim();
         const category = ($("#mCat", backdrop).value || "").trim();
         const location = ($("#mLoc", backdrop).value || "").trim();
@@ -1636,7 +1685,7 @@ function renderUsers(root){
       `);
 
       $("#mClose", backdrop).onclick = close;
-      $("#mCreate", backdrop).onclick = ()=>{
+      $("#mCreate", backdrop).onclick = async ()=>{
         const id = ($("#mUser", backdrop).value || "").trim().toLowerCase();
         const name = ($("#mName", backdrop).value || "").trim();
         const pin = ($("#mPin", backdrop).value || "").trim();
@@ -1645,7 +1694,13 @@ function renderUsers(root){
         if(state.users.find(x=>x.id === id)) return toast("Usuário já existe.");
 
         state.users.push({ id, name, role:"supervisor", pin, obraIds:["*"], active:true });
-        saveState();
+        try{
+          persistLocal();
+          await saveMetaNowToFirestore();
+        }catch(e){
+          console.error(e);
+          saveState();
+        }
         close();
         renderUsers(root);
         toast("Supervisor criado.");
