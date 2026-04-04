@@ -170,11 +170,12 @@ function seed(){
       { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
       { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
       { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
-    { id:"qualidade_formosa", name:"Qualidade Formosa", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
       { id:"qualidade_formosa", name:"Qualidade Formosa", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
       { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
       { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
-      { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+      { id:"coordenador_valparaiso", name:"Coordenador Valparaíso", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+      { id:"coordenador_aguaslindas", name:"Coordenador Águas Lindas", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+      { id:"coordenador_formosa", name:"Coordenador Formosa", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
       { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
       { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true }
     ],
@@ -266,16 +267,26 @@ function ensureSystemDefaults(){
     { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
     { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
     { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
-      { id:"qualidade_formosa", name:"Qualidade Formosa", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
+    { id:"qualidade_formosa", name:"Qualidade Formosa", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
     { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
     { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
-    { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+    { id:"coordenador_valparaiso", name:"Coordenador Valparaíso", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+    { id:"coordenador_aguaslindas", name:"Coordenador Águas Lindas", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
+    { id:"coordenador_formosa", name:"Coordenador Formosa", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
     { id:"engenheiro", name:"Engenheiro Geral", role:"engenheiro", pin:"8888", obraIds:["*"], active:true },
     { id:"diretor", name:"Diretor", role:"diretor", pin:"9999", obraIds:["*"], active:true }
   ];
   defaults.forEach(d=>{
     if(!state.users.find(u=>u.id===d.id)) state.users.push(d);
   });
+
+
+  state.users = state.users.filter((u, idx, arr) => {
+    if(!u || !u.id) return false;
+    if(u.id === "coordenador") return false;
+    return arr.findIndex(x => x && x.id === u.id) === idx;
+  });
+
 
   for(const oid of Object.keys(state.obras)){
     const obra = state.obras[oid];
@@ -453,10 +464,10 @@ function canReopen(u){ return ["qualidade","supervisor"].includes(u.role); }
 
 function userCities(u){
   if(!u) return [];
-  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return ["*"];
+  if(["supervisor","diretor","engenheiro"].includes(u.role)) return ["*"];
   if(u.role === "execucao") return [];
-  if(u.id === "qualidade_aguaslindas") return ["aguaslindas"];
-  if(u.id === "qualidade_formosa") return ["formosa"];
+  if(u.id === "qualidade_aguaslindas" || u.id === "coordenador_aguaslindas") return ["aguaslindas"];
+  if(u.id === "qualidade_formosa" || u.id === "coordenador_formosa") return ["formosa"];
   return ["valparaiso"];
 }
 
@@ -480,14 +491,14 @@ function obrasByCityForUser(u, city){
 
 function canAccessObra(u, obraId){
   if(!u) return false;
-  if(["supervisor","diretor","coordenador","engenheiro"].includes(u.role)) return true;
+  const obra = state.obras?.[obraId] || state.obras_index.find(o=>o.id===obraId);
+  const city = normalizeCity(obra?.city || "valparaiso");
+  const cities = userCities(u);
+
+  if(["supervisor","diretor","engenheiro"].includes(u.role)) return true;
+  if(u.role === "coordenador") return cities.includes("*") || cities.includes(city);
   if(u.role === "execucao") return (u.obraIds || []).includes(obraId) || (u.obraIds || []).includes("*");
-  if(u.role === "qualidade"){
-    const obra = state.obras?.[obraId] || state.obras_index.find(o=>o.id===obraId);
-    const city = normalizeCity(obra?.city || "valparaiso");
-    const cities = userCities(u);
-    return cities.includes("*") || cities.includes(city);
-  }
+  if(u.role === "qualidade") return cities.includes("*") || cities.includes(city);
   return false;
 }
 
@@ -844,6 +855,8 @@ function ensureRuntimeStyles(){
     .dot--b{background:#2563eb}
     .dot--g{background:#16a34a}
     .apt--conf{ background:rgba(37,99,235,.14)!important; border-color:#2563eb!important; color:#dbeafe!important; }
+    .kpi__v{ color:#2563eb!important; }
+    .kpi__l{ color:#475569!important; }
   `;
   document.head.appendChild(st);
 }
@@ -979,6 +992,7 @@ function renderDash(root){
         </div>
         <div class="row" style="gap:8px">
           ${canManageObras(u) ? `<button id="btnIrObras" class="btn">Tabela de obras</button>` : ``}
+          ${["supervisor","diretor","engenheiro","coordenador"].includes(u.role) ? `<button id="btnPdfResumoGeral" class="btn">PDF Resumo</button>` : ``}
           ${canManageUsers(u) ? `<button id="btnUsersDash" class="btn">Usuários</button>` : ``}
         </div>
       </div>
@@ -992,6 +1006,8 @@ function renderDash(root){
   });
   const btnIrObras = $("#btnIrObras");
   if(btnIrObras) btnIrObras.onclick = ()=> goto("home");
+  const btnPdfResumoGeral = $("#btnPdfResumoGeral");
+  if(btnPdfResumoGeral) btnPdfResumoGeral.onclick = ()=> gerarPDFResumoDashboard(u, "");
   const btnUsersDash = $("#btnUsersDash");
   if(btnUsersDash) btnUsersDash.onclick = ()=> goto("users");
 }
@@ -1009,6 +1025,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
         </div>
         <div class="row" style="gap:8px">
           ${showBackToCities ? `<button id="btnBackCities" class="btn">Cidades</button>` : ``}
+          ${["supervisor","diretor","engenheiro","coordenador"].includes(u.role) ? `<button id="btnPdfResumoCidade" class="btn">PDF Resumo</button>` : ``}
           ${canManageObras(u) ? `<button id="btnIrObrasCidade" class="btn">Tabela de obras</button>` : ``}
         </div>
       </div>
@@ -1017,7 +1034,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
       <div class="kpis">
         <div class="kpi"><div class="kpi__v">${s.obras}</div><div class="kpi__l">Obras</div></div>
         <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
-                <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
+        <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
         <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
         <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
         <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
@@ -1062,6 +1079,8 @@ function renderCityDashboard(root, u, city, showBackToCities){
 
   const btnBackCities = $("#btnBackCities");
   if(btnBackCities) btnBackCities.onclick = ()=> goto("dash");
+  const btnPdfResumoCidade = $("#btnPdfResumoCidade");
+  if(btnPdfResumoCidade) btnPdfResumoCidade.onclick = ()=> gerarPDFResumoDashboard(u, city);
   const btnIrObrasCidade = $("#btnIrObrasCidade");
   if(btnIrObrasCidade) btnIrObrasCidade.onclick = ()=> goto("home", { city });
   $$("[data-open-obra-city]").forEach(btn => {
@@ -1411,6 +1430,149 @@ function fmtEvent(ev){
   return `${esc(ev.type)} — ${at}`;
 }
 
+
+function formatDateShort(iso){
+  if(!iso) return "";
+  try{
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2,"0");
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }catch(e){
+    return "";
+  }
+}
+
+function buildHistoricoPDF(p){
+  const parts = [];
+  if(p.createdAt) parts.push(`criado ${formatDateShort(p.createdAt)}`);
+  if(p.doneAt) parts.push(`feito ${formatDateShort(p.doneAt)}`);
+  if(p.reviewedAt){
+    if(p.state === "reprovado" && p.reviewedBy?.role === "qualidade") parts.push(`reprovado pela qualidade ${formatDateShort(p.reviewedAt)}`);
+    else parts.push(`conferido pela qualidade ${formatDateShort(p.reviewedAt)}`);
+  }
+  if(p.approvedAt){
+    if(p.state === "reprovado") parts.push(`reprovado pelo supervisor ${formatDateShort(p.approvedAt)}`);
+    else parts.push(`concluído pelo supervisor ${formatDateShort(p.approvedAt)}`);
+  }
+  return parts.join(" | ");
+}
+
+function getStatusPDF(p){
+  if(p.state === "pendente") return "PENDENTE";
+  if(p.state === "feito") return "FEITO - AGUARDANDO CONFERÊNCIA QUALIDADE";
+  if(p.state === "conferido") return "FEITO - CONFERIDO PELA QUALIDADE";
+  if(p.state === "concluido") return "CONCLUÍDO - CONFERIDO PELO SUPERVISOR";
+  if(p.state === "reprovado") return "PENDENTE";
+  return String(p.state || "").toUpperCase();
+}
+
+function getObsPDF(p){
+  if(p.state !== "reprovado") return "";
+  if(p.reviewedBy?.role === "qualidade") return "Obs: reprovado pela QUALIDADE";
+  return "Obs: reprovado pelo SUPERVISOR";
+}
+
+function gerarPDFObra(obraId){
+  const obra = state.obras[obraId];
+  if(!obra) return;
+  const blocks = Object.values(obra.blocks || {}).sort((a,b)=>Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B","")));
+  let html = `
+    <html><head><meta charset="utf-8">
+    <title>${esc(obra.name)} - PDF</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#111}
+      .page{page-break-after:always}
+      .header{margin-bottom:16px}
+      .company{font-size:18px;font-weight:700}
+      .obra{font-size:20px;font-weight:700;margin-top:4px}
+      .meta{margin:4px 0}
+      .item{margin:0 0 14px 0;line-height:1.45}
+      .status{font-weight:700}
+      .hist{font-size:12px;color:#333}
+    </style></head><body>`;
+  let pages = 0;
+  blocks.forEach(block=>{
+    const apts = Object.keys(block.apartments || {}).sort((a,b)=>Number(a)-Number(b));
+    apts.forEach(apto=>{
+      const apt = block.apartments[apto];
+      const pendencias = (apt.pendencias || []);
+      if(!pendencias.length) return;
+      pages++;
+      html += `
+        <div class="page">
+          <div class="header">
+            <div class="company">Bela Mares Incorporações</div>
+            <div class="obra">${esc(obra.name)}</div>
+            <div class="meta">Bloco: ${esc(block.id)}</div>
+            <div class="meta">Apartamento: ${esc(apto)}</div>
+          </div>`;
+      pendencias.forEach(p=>{
+        const loc = p.location ? ` (${esc(p.location)})` : "";
+        const obs = getObsPDF(p);
+        const hist = buildHistoricoPDF(p);
+        html += `
+          <div class="item">
+            - ${esc(p.title || "Pendência")}${loc}<br>
+            <span class="status">Status: ${esc(getStatusPDF(p))}</span><br>
+            ${obs ? `${esc(obs)}<br>` : ``}
+            ${hist ? `<span class="hist">Histórico: ${esc(hist)}</span>` : ``}
+          </div>`;
+      });
+      html += `</div>`;
+    });
+  });
+  html += `</body></html>`;
+  if(!pages) return toast("Não há apartamentos com pendências para gerar PDF.");
+  const w = window.open("", "_blank");
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(()=>w.print(), 300);
+}
+
+function gerarPDFResumoDashboard(u, city){
+  const cities = city ? [normalizeCity(city)] : ["valparaiso","aguaslindas","formosa"].filter(c => obrasByCityForUser(u, c).length || ["diretor","engenheiro","supervisor"].includes(u.role));
+  let html = `
+    <html><head><meta charset="utf-8">
+    <title>Resumo Geral</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#111}
+      .company{font-size:18px;font-weight:700}
+      .title{font-size:20px;font-weight:700;margin:4px 0 18px}
+      table{width:100%;border-collapse:collapse;margin:12px 0 28px}
+      th,td{border:1px solid #333;padding:8px 10px;font-size:12px}
+      th{text-align:left;background:#f3f4f6}
+      h2{margin:20px 0 8px}
+      .sum{margin:8px 0 14px;font-size:13px}
+    </style></head><body>
+    <div class="company">Bela Mares Incorporações</div>
+    <div class="title">Resumo Geral de Obras</div>`;
+  cities.forEach(c=>{
+    const obras = obrasByCityForUser(u, c).sort((a,b)=>String(a.name||a.id).localeCompare(String(b.name||b.id), "pt-BR"));
+    const s = cityStatsFromObras(obras);
+    html += `<h2>${cityLabel(c)}</h2>
+      <div class="sum">Obras: ${s.obras} | Aptos: ${s.total} | Sem vistoria: ${s.semVistoria} | Pendência: ${s.pend} | Aguardando: ${s.aguard} | Conferido: ${s.conferido} | Concluído: ${s.conclu}</div>
+      <table>
+        <thead><tr><th>Obra</th><th>Qtd aptos</th><th>Sem vistoria</th><th>Pendência</th><th>Aguardando</th><th>Conferido</th><th>Concluído</th></tr></thead>
+        <tbody>
+          ${obras.map(o=>{
+            const os = calcObraStats(o.id);
+            return `<tr><td>${esc(o.name || o.id)}</td><td>${os.total}</td><td>${os.semVistoria}</td><td>${os.pend}</td><td>${os.aguard}</td><td>${os.conferido}</td><td>${os.conclu}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>`;
+  });
+  html += `</body></html>`;
+  const w = window.open("", "_blank");
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(()=>w.print(), 300);
+}
+
+
 async function syncAptAndRefresh(obraId, blockId, apto, onDone, successMsg){
   try{
     saveState();
@@ -1706,6 +1868,9 @@ function renderObra(root){
           </div>
           <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
         </div>
+        <div class="row" style="gap:8px">
+          ${["supervisor","diretor","engenheiro","coordenador"].includes(u.role) ? `<button id="btnPDFObra" class="btn">Gerar PDF</button>` : ``}
+        </div>
       </div>
       <div class="hr"></div>
 
@@ -1719,6 +1884,9 @@ function renderObra(root){
       </div>
     </div>
   `;
+
+  const btnPDFObra = $("#btnPDFObra");
+  if(btnPDFObra) btnPDFObra.onclick = ()=> gerarPDFObra(obraId);
 
   $$('[data-open-block]').forEach(btn=>{
     btn.onclick = ()=> goto("apto", { obraId, blockId: btn.getAttribute("data-open-block") });
@@ -1803,8 +1971,8 @@ function renderUsers(root){
         </thead>
         <tbody>
           ${users.map(x=>{
-            const access = x.role === "qualidade"
-              ? (x.id === "qualidade_aguaslindas" ? "Águas Lindas" : "Valparaíso")
+            const access = ["qualidade","coordenador"].includes(x.role)
+              ? userCities(x).map(cityLabel).join(", ")
               : ((x.obraIds || [])[0] === "*" ? "Todas" : (x.obraIds || []).join(", "));
             return `
               <tr>
@@ -1935,3 +2103,4 @@ ensureSystemDefaults();
 persistLocal();
 initFirestore();
 render();
+    
