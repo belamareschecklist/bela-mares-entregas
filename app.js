@@ -76,16 +76,24 @@ function slugify(input){
 
 function normalizeCity(v){
   const s = String(v || "").trim().toLowerCase();
-  if(s.includes("aguas")) return "aguaslindas";
   if(s.includes("formosa")) return "formosa";
+  if(s.includes("aguas")) return "aguaslindas";
   return "valparaiso";
 }
 
-function cityLabel(v){
-  const c = normalizeCity(v);
+function cityLabel(city){
+  const c = normalizeCity(city);
   if(c === "aguaslindas") return "Águas Lindas";
   if(c === "formosa") return "Formosa";
   return "Valparaíso";
+}
+
+function citySortKey(city){
+  const c = normalizeCity(city);
+  if(c === "valparaiso") return 1;
+  if(c === "aguaslindas") return 2;
+  if(c === "formosa") return 3;
+  return 99;
 }
 
 function fmtDT(iso){
@@ -258,6 +266,7 @@ function ensureSystemDefaults(){
     { id:"supervisor_01", name:"Supervisor 01", role:"supervisor", pin:"3333", obraIds:["*"], active:true },
     { id:"qualidade_valparaiso", name:"Qualidade Valparaíso", role:"qualidade", pin:"2222", obraIds:["*"], active:true },
     { id:"qualidade_aguaslindas", name:"Qualidade Águas Lindas", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
+      { id:"qualidade_formosa", name:"Qualidade Formosa", role:"qualidade", pin:"2233", obraIds:["*"], active:true },
     { id:"exec_costa_rica", name:"Execução Costa Rica", role:"execucao", pin:"1234", obraIds:["costa_rica"], active:true },
     { id:"exec_costa_brava", name:"Execução Costa Brava", role:"execucao", pin:"5678", obraIds:["costa_brava"], active:true },
     { id:"coordenador", name:"Coordenador", role:"coordenador", pin:"7777", obraIds:["*"], active:true },
@@ -449,6 +458,24 @@ function userCities(u){
   if(u.id === "qualidade_aguaslindas") return ["aguaslindas"];
   if(u.id === "qualidade_formosa") return ["formosa"];
   return ["valparaiso"];
+}
+
+function cityStatsFromObras(obras){
+  const total = { obras: obras.length, total:0, semVistoria:0, pend:0, aguard:0, conferido:0, conclu:0 };
+  obras.forEach(o=>{
+    const s = calcObraStats(o.id);
+    total.total += s.total;
+    total.semVistoria += s.semVistoria;
+    total.pend += s.pend;
+    total.aguard += s.aguard;
+    total.conferido += s.conferido;
+    total.conclu += s.conclu;
+  });
+  return total;
+}
+
+function obrasByCityForUser(u, city){
+  return visibleObrasForUser(u).filter(o => normalizeCity(o.city) === normalizeCity(city));
 }
 
 function canAccessObra(u, obraId){
@@ -658,7 +685,7 @@ function setTopbar(){
     }
     if(settingsBtn) settingsBtn.style.display = "inline-flex";
     if(logout) logout.style.display = "inline-flex";
-    if(back) back.style.display = (nav.screen === "home" || nav.screen === "dash") ? "none" : "inline-flex";
+    if(back) back.style.display = (nav.screen === "home" || (nav.screen === "dash" && !nav.params.city)) ? "none" : "inline-flex";
   }else{
     if(chip) chip.style.display = "none";
     if(settingsBtn) settingsBtn.style.display = "none";
@@ -682,9 +709,10 @@ function setTopbar(){
         return goto("obra", { obraId: nav.params.obraId });
       }
       if(nav.screen === "obra") return goto(canViewOnly(u) ? "dash" : "home");
-      if(nav.screen === "users") return goto(canViewOnly(u) ? "dash" : "home");
-      if(nav.screen === "settings") return goto(canViewOnly(u) ? "dash" : "home");
-      goto(canViewOnly(u) ? "dash" : "home");
+      if(nav.screen === "users") return goto("dash", nav.params.city ? { city: nav.params.city } : {});
+      if(nav.screen === "settings") return goto("dash", nav.params.city ? { city: nav.params.city } : {});
+      if(nav.screen === "dash" && nav.params.city) return goto("dash");
+      goto("dash");
     };
   }
 
@@ -790,9 +818,9 @@ function blockDots(obraId, block){
 
 function statusLabel(stateValue){
   if(stateValue === "pendente") return "Pendente";
-  if(stateValue === "feito") return "Feito - aguardando conferência qualidade";
-  if(stateValue === "conferido") return "Feito - conferido pela qualidade";
-  if(stateValue === "concluido") return "Concluído - conferido pelo supervisor";
+  if(stateValue === "feito") return "Aguardando qualidade";
+  if(stateValue === "conferido") return "Conferido";
+  if(stateValue === "concluido") return "Concluído";
   if(stateValue === "reprovado") return "Reprovado";
   return String(stateValue || "-");
 }
@@ -905,88 +933,188 @@ function renderLogin(root){
 function renderDash(root){
   const u = currentUser();
   if(!u) return goto("login");
-  if(!canViewOnly(u)) return goto("home");
 
-  const stats = visibleObrasForUser(u).map(o=>{
-    const s = calcObraStats(o.id);
-    return { id:o.id, name:o.name, ...s };
-  });
+  if(u.role === "execucao") return renderExecucaoDash(root, u);
 
-  const total = stats.reduce((a,s)=>({
-    total: a.total + s.total,
-    semVistoria: a.semVistoria + s.semVistoria,
-    pend: a.pend + s.pend,
-    aguard: a.aguard + s.aguard,
-    conferido: a.conferido + s.conferido,
-    conclu: a.conclu + s.conclu
-  }), { total:0, semVistoria:0, pend:0, aguard:0, conferido:0, conclu:0 });
+  if(u.role === "qualidade") {
+    const cities = userCities(u).filter(c => c !== "*");
+    const city = normalizeCity(nav.params.city || cities[0] || "valparaiso");
+    return renderCityDashboard(root, u, city, false);
+  }
+
+  const city = nav.params.city ? normalizeCity(nav.params.city) : "";
+  if(city) return renderCityDashboard(root, u, city, true);
+
+  const cities = ["valparaiso","aguaslindas","formosa"];
+  const cards = cities.map(city => {
+    const obras = obrasByCityForUser(u, city);
+    const s = cityStatsFromObras(obras);
+    return `
+      <button class="card" data-open-city="${city}" style="text-align:left">
+        <div class="row">
+          <div>
+            <div class="h2">${cityLabel(city)}</div>
+            <div class="small">${s.obras} obra(s)</div>
+          </div>
+        </div>
+        <div class="hr"></div>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
+          <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
+          <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
+          <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+          <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
+          <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
+        </div>
+      </button>
+    `;
+  }).join("");
 
   root.innerHTML = `
     <div class="card">
       <div class="row">
         <div>
-          <div class="h1">Visão Geral</div>
-          <div class="small">Somatório de todas as obras</div>
+          <div class="h1">Dashboard por cidade</div>
+          <div class="small">Selecione uma cidade para ver o resumo e as obras.</div>
+        </div>
+        <div class="row" style="gap:8px">
+          ${canManageObras(u) ? `<button id="btnIrObras" class="btn">Tabela de obras</button>` : ``}
+          ${canManageUsers(u) ? `<button id="btnUsersDash" class="btn">Usuários</button>` : ``}
+        </div>
+      </div>
+      <div class="hr"></div>
+      <div class="grid2">${cards}</div>
+    </div>
+  `;
+
+  $$("[data-open-city]").forEach(btn => {
+    btn.onclick = ()=> goto("dash", { city: btn.getAttribute("data-open-city") });
+  });
+  const btnIrObras = $("#btnIrObras");
+  if(btnIrObras) btnIrObras.onclick = ()=> goto("home");
+  const btnUsersDash = $("#btnUsersDash");
+  if(btnUsersDash) btnUsersDash.onclick = ()=> goto("users");
+}
+
+function renderCityDashboard(root, u, city, showBackToCities){
+  const obras = obrasByCityForUser(u, city).sort((a,b)=>String(a.name||a.id).localeCompare(String(b.name||b.id), "pt-BR"));
+  const s = cityStatsFromObras(obras);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="h1">${cityLabel(city)}</div>
+          <div class="small">Resumo da cidade e obras vinculadas.</div>
+        </div>
+        <div class="row" style="gap:8px">
+          ${showBackToCities ? `<button id="btnBackCities" class="btn">Cidades</button>` : ``}
+          ${canManageObras(u) ? `<button id="btnIrObrasCidade" class="btn">Tabela de obras</button>` : ``}
         </div>
       </div>
       <div class="hr"></div>
 
       <div class="kpis">
-        <div class="kpi"><div class="kpi__v">${total.total}</div><div class="kpi__l">Qtd aptos</div></div>
-        <div class="kpi"><div class="kpi__v">${total.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
-        <div class="kpi"><div class="kpi__v">${total.pend}</div><div class="kpi__l">Com pendência</div></div>
-        <div class="kpi"><div class="kpi__v">${total.aguard}</div><div class="kpi__l">Aguardando</div></div>
-        <div class="kpi"><div class="kpi__v">${total.conferido}</div><div class="kpi__l">Conferido</div></div>
-        <div class="kpi"><div class="kpi__v">${total.conclu}</div><div class="kpi__l">Concluído</div></div>
+        <div class="kpi"><div class="kpi__v">${s.obras}</div><div class="kpi__l">Obras</div></div>
+        <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
+                <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
+        <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
+        <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+        <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
+        <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
       </div>
 
       <div class="hr"></div>
-
       <table class="table">
         <thead>
           <tr>
             <th>Obra</th>
             <th style="text-align:center">Qtd aptos</th>
             <th style="text-align:center">Sem vistoria</th>
-            <th style="text-align:center">Com pendência</th>
+            <th style="text-align:center">Pendência</th>
             <th style="text-align:center">Aguardando</th>
-                        <th style="text-align:center">Conferido</th>
+            <th style="text-align:center">Conferido</th>
             <th style="text-align:center">Concluído</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          ${stats.map(s=>`
-            <tr>
-              <td><b>${esc(s.name)}</b></td>
-              <td style="text-align:center"><b>${s.total}</b></td>
-              <td style="text-align:center"><b>${s.semVistoria}</b></td>
-              <td style="text-align:center"><b>${s.pend}</b></td>
-              <td style="text-align:center"><b>${s.aguard}</b></td>
-              <td style="text-align:center"><b>${s.conferido}</b></td>
-              <td style="text-align:center"><b>${s.conclu}</b></td>
-              <td style="text-align:right"><button class="btn" data-open="${esc(s.id)}">Abrir</button></td>
-            </tr>
-          `).join("")}
+          ${obras.map(o=>{
+            const os = calcObraStats(o.id);
+            const cfg = safeObraConfig(o);
+            return `
+              <tr>
+                <td><b>${esc(o.name || o.id)}</b><div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div></td>
+                <td style="text-align:center"><b>${os.total}</b></td>
+                <td style="text-align:center"><b>${os.semVistoria}</b></td>
+                <td style="text-align:center"><b>${os.pend}</b></td>
+                <td style="text-align:center"><b>${os.aguard}</b></td>
+                <td style="text-align:center"><b>${os.conferido}</b></td>
+                <td style="text-align:center"><b>${os.conclu}</b></td>
+                <td style="text-align:right"><button class="btn" data-open-obra-city="${esc(o.id)}">Abrir</button></td>
+              </tr>
+            `;
+          }).join("")}
         </tbody>
       </table>
     </div>
   `;
 
-  $$('button[data-open]').forEach(b=>{
-    b.onclick = ()=> goto("obra", { obraId: b.getAttribute("data-open") });
+  const btnBackCities = $("#btnBackCities");
+  if(btnBackCities) btnBackCities.onclick = ()=> goto("dash");
+  const btnIrObrasCidade = $("#btnIrObrasCidade");
+  if(btnIrObrasCidade) btnIrObrasCidade.onclick = ()=> goto("home", { city });
+  $$("[data-open-obra-city]").forEach(btn => {
+    btn.onclick = ()=> goto("obra", { obraId: btn.getAttribute("data-open-obra-city") });
+  });
+}
+
+function renderExecucaoDash(root, u){
+  const obras = visibleObrasForUser(u);
+  root.innerHTML = `
+    <div class="card">
+      <div class="h1">Minha obra</div>
+      <div class="small">Resumo das obras vinculadas ao seu login.</div>
+      <div class="hr"></div>
+      <div class="grid">
+        ${obras.map(o=>{
+          const s = calcObraStats(o.id);
+          return `
+            <div class="card">
+              <div class="row">
+                <div>
+                  <div class="h2">${esc(o.name || o.id)}</div>
+                  <div class="small">${cityLabel(o.city)}</div>
+                </div>
+                <button class="btn" data-open-exec-obra="${esc(o.id)}">Abrir obra</button>
+              </div>
+              <div class="hr"></div>
+              <div class="kpis">
+                <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
+                <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
+                <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
+                <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+                <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
+                <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+  $$("[data-open-exec-obra]").forEach(btn => {
+    btn.onclick = ()=> goto("obra", { obraId: btn.getAttribute("data-open-exec-obra") });
   });
 }
 
 function renderHome(root){
   const u = currentUser();
   if(!u) return goto("login");
-  if(canViewOnly(u)) return goto("dash");
 
-  const obrasVisiveis = visibleObrasForUser(u);
-  const valparaiso = obrasVisiveis.filter(o => normalizeCity(o.city) === "valparaiso");
-  const aguaslindas = obrasVisiveis.filter(o => normalizeCity(o.city) === "aguaslindas");
-  const formosa = obrasVisiveis.filter(o => normalizeCity(o.city) === "formosa");
+  const cityFilter = nav.params.city ? normalizeCity(nav.params.city) : "";
+  const obrasVisiveis = visibleObrasForUser(u).filter(o => !cityFilter || normalizeCity(o.city) === cityFilter);
+  const grouped = ["valparaiso","aguaslindas","formosa"].map(city => ({ city, arr: obrasVisiveis.filter(o => normalizeCity(o.city) === city) }));
 
   function renderSection(title, arr){
     if(!arr.length) return "";
@@ -995,7 +1123,7 @@ function renderHome(root){
         <td colspan="8" style="padding:0;border:none;background:transparent">
           <div style="margin:14px 0 6px;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,#0f172a,#1e293b);color:#f8fafc;display:flex;align-items:center;justify-content:space-between;gap:12px">
             <div style="font-weight:800">${title}</div>
-                        <div style="font-size:12px;opacity:.85">${arr.length} obra(s)</div>
+            <div style="font-size:12px;opacity:.85">${arr.length} obra(s)</div>
           </div>
         </td>
       </tr>
@@ -1026,13 +1154,13 @@ function renderHome(root){
       <div class="card">
         <div class="row">
           <div>
-            <div class="h1">Obras</div>
+            <div class="h1">Obras${cityFilter ? ` • ${cityLabel(cityFilter)}` : ""}</div>
             <div class="small">Selecione uma obra para ver blocos e apartamentos.</div>
           </div>
           <div class="row" style="gap:8px">
-            <button id="btnDash" class="btn">Visão Geral</button>
+            <button id="btnDash" class="btn">Dashboard</button>
             ${canManageObras(u) ? `<button id="btnAddObra" class="btn btn--orange">+ Adicionar obra</button>` : ``}
-            <button id="btnUsers" class="btn">Usuários</button>
+            ${canManageUsers(u) ? `<button id="btnUsers" class="btn">Usuários</button>` : ``}
           </div>
         </div>
         <div class="hr"></div>
@@ -1051,9 +1179,7 @@ function renderHome(root){
             </tr>
           </thead>
           <tbody>
-            ${renderSection("Valparaíso", valparaiso)}
-            ${renderSection("Águas Lindas", aguaslindas)}
-            ${renderSection("Formosa", formosa)}
+            ${cityFilter ? renderSection(cityLabel(cityFilter), obrasVisiveis) : grouped.map(g => renderSection(cityLabel(g.city), g.arr)).join("")}
           </tbody>
         </table>
       </div>
@@ -1072,7 +1198,7 @@ function renderHome(root){
     </div>
   `;
 
-  $("#btnDash").onclick = ()=> goto("dash");
+  $("#btnDash").onclick = ()=> goto("dash", cityFilter ? { city: cityFilter } : {});
   const usersBtn = $("#btnUsers");
   if(usersBtn) usersBtn.onclick = ()=> goto("users");
 
@@ -1143,7 +1269,7 @@ function renderHome(root){
     };
   }
 
-  $$('button[data-del]').forEach(btn=>{
+  $$("button[data-del]").forEach(btn=>{
     btn.onclick = async ()=>{
       const obraId = btn.getAttribute("data-del");
       const obra = state.obras[obraId];
@@ -1159,7 +1285,7 @@ function renderHome(root){
     };
   });
 
-  $$('button[data-open]').forEach(btn=>{
+  $$("button[data-open]").forEach(btn=>{
     btn.onclick = ()=> goto("obra", { obraId: btn.getAttribute("data-open") });
   });
 }
@@ -1580,9 +1706,6 @@ function renderObra(root){
           </div>
           <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
         </div>
-        <div class="row" style="gap:8px">
-          <button id="btnObraPdf" class="btn">Gerar PDF</button>
-        </div>
       </div>
       <div class="hr"></div>
 
@@ -1600,9 +1723,6 @@ function renderObra(root){
   $$('[data-open-block]').forEach(btn=>{
     btn.onclick = ()=> goto("apto", { obraId, blockId: btn.getAttribute("data-open-block") });
   });
-
-  const btnPdf = $("#btnObraPdf");
-  if(btnPdf) btnPdf.onclick = ()=> generateObraPdf(obraId);
 }
 
 function renderApto(root){
@@ -1660,99 +1780,6 @@ function renderApto(root){
   });
 }
 
-
-function generateObraPdf(obraId){
-  const obra = state.obras?.[obraId];
-  if(!obra){
-    toast("Obra não encontrada.");
-    return;
-  }
-
-  const blocks = Object.values(obra.blocks || {}).sort((a,b)=>
-    Number(String(a.id).replace("B","")) - Number(String(b.id).replace("B",""))
-  );
-
-  const pages = [];
-  blocks.forEach(block=>{
-    const aptNums = aptNumsForBlock(obra, block);
-    aptNums.forEach(an=>{
-      const apt = getApartmentView(obraId, block.id, an);
-      const pendencias = (apt.pendencias || []).filter(Boolean);
-      if(!pendencias.length) return;
-      pages.push({ blockId: block.id, apto: an, pendencias });
-    });
-  });
-
-  if(!pages.length){
-    toast("Esta obra não possui apartamentos com pendências para gerar PDF.");
-    return;
-  }
-
-  const w = window.open("", "_blank");
-  if(!w){
-    toast("Não foi possível abrir a visualização do PDF.");
-    return;
-  }
-
-  const html = `<!DOCTYPE html>
-  <html lang="pt-BR">
-  <head>
-    <meta charset="utf-8" />
-    <title>${esc(obra.name)} - Relatório de Pendências</title>
-    <style>
-      @page { size: A4; margin: 12mm; }
-      * { box-sizing: border-box; }
-      body { font-family: Arial, Helvetica, sans-serif; color:#111827; margin:0; }
-      .page { page-break-after: always; min-height: 100vh; padding: 0; }
-      .page:last-child { page-break-after: auto; }
-      h1 { font-size: 20px; margin: 0 0 8px; }
-      h2 { font-size: 16px; margin: 0 0 12px; }
-      .meta { margin: 0 0 14px; font-size: 12px; color:#374151; }
-      .card { border:1px solid #d1d5db; border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; }
-      .tit { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
-      .row { margin: 3px 0; font-size: 12px; }
-      .hist { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #d1d5db; }
-      .hist-item { margin: 2px 0; font-size: 11px; color:#4b5563; }
-      .badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; background:#eef2ff; }
-    </style>
-  </head>
-  <body>
-    ${pages.map((page, idx)=>`
-      <section class="page">
-        <h1>${esc(obra.name)}</h1>
-        <h2>Bloco ${esc(page.blockId)} • Apto ${esc(page.apto)}</h2>
-        <div class="meta">Cidade: ${esc(cityLabel(obra.city))} • Página ${idx + 1} de ${pages.length}</div>
-        ${page.pendencias.map((p, i)=>`
-          <div class="card">
-            <div class="tit">Pendência ${i + 1}: ${esc(p.title || "Sem descrição")}</div>
-            <div class="row"><b>Status:</b> <span class="badge">${esc(statusLabel(p.state))}</span></div>
-            <div class="row"><b>Categoria:</b> ${esc(p.category || "-")}</div>
-            <div class="row"><b>Local:</b> ${esc(p.location || "-")}</div>
-            <div class="row"><b>Criado em:</b> ${esc(fmtDT(p.createdAt))}</div>
-            <div class="row"><b>Criado por:</b> ${esc(p.createdBy?.name || "-")}</div>
-            ${p.doneAt ? `<div class="row"><b>Feito em:</b> ${esc(fmtDT(p.doneAt))}</div>` : ``}
-            ${p.doneBy?.name ? `<div class="row"><b>Feito por:</b> ${esc(p.doneBy.name)}</div>` : ``}
-            ${p.reviewedAt ? `<div class="row"><b>Conferido em:</b> ${esc(fmtDT(p.reviewedAt))}</div>` : ``}
-            ${p.reviewedBy?.name ? `<div class="row"><b>Conferido por:</b> ${esc(p.reviewedBy.name)}</div>` : ``}
-            ${p.approvedAt ? `<div class="row"><b>Aprovado em:</b> ${esc(fmtDT(p.approvedAt))}</div>` : ``}
-            ${p.approvedBy?.name ? `<div class="row"><b>Aprovado por:</b> ${esc(p.approvedBy.name)}</div>` : ``}
-            ${p.rejection ? `<div class="row"><b>Motivo da reprovação:</b> ${esc(p.rejection)}</div>` : ``}
-            ${(p.events && p.events.length) ? `<div class="hist">${p.events.map(ev=>`<div class="hist-item">${fmtEvent(ev)}</div>`).join("")}</div>` : ``}
-          </div>
-        `).join("")}
-      </section>
-    `).join("")}
-    <script>
-      window.onload = function(){ setTimeout(function(){ window.print(); }, 300); };
-    <\/script>
-  </body>
-  </html>`;
-
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
-}
-
 function renderUsers(root){
   const u = currentUser();
   if(!u) return goto("login");
@@ -1777,7 +1804,7 @@ function renderUsers(root){
         <tbody>
           ${users.map(x=>{
             const access = x.role === "qualidade"
-              ? (x.id === "qualidade_aguaslindas" ? "Águas Lindas" : (x.id === "qualidade_formosa" ? "Formosa" : "Valparaíso"))
+              ? (x.id === "qualidade_aguaslindas" ? "Águas Lindas" : "Valparaíso")
               : ((x.obraIds || [])[0] === "*" ? "Todas" : (x.obraIds || []).join(", "));
             return `
               <tr>
