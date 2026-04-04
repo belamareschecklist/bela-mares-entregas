@@ -829,7 +829,7 @@ function blockDots(obraId, block){
 
 function statusLabel(stateValue){
   if(stateValue === "pendente") return "Pendente";
-  if(stateValue === "feito") return "Aguardando qualidade";
+  if(stateValue === "feito") return "Aguardando conferência";
   if(stateValue === "conferido") return "Conferido";
   if(stateValue === "concluido") return "Concluído";
   if(stateValue === "reprovado") return "Reprovado";
@@ -975,7 +975,7 @@ function renderDash(root){
           <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
           <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
           <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
-          <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+          <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
           <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
           <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
         </div>
@@ -1036,7 +1036,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
         <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
         <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
         <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
-        <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+        <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
         <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
         <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
       </div>
@@ -1049,7 +1049,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
             <th style="text-align:center">Qtd aptos</th>
             <th style="text-align:center">Sem vistoria</th>
             <th style="text-align:center">Pendência</th>
-            <th style="text-align:center">Aguardando</th>
+            <th style="text-align:center">Aguardando conferência</th>
             <th style="text-align:center">Conferido</th>
             <th style="text-align:center">Concluído</th>
             <th></th>
@@ -1112,7 +1112,7 @@ function renderExecucaoDash(root, u){
                 <div class="kpi"><div class="kpi__v">${s.total}</div><div class="kpi__l">Qtd aptos</div></div>
                 <div class="kpi"><div class="kpi__v">${s.semVistoria}</div><div class="kpi__l">Sem vistoria</div></div>
                 <div class="kpi"><div class="kpi__v">${s.pend}</div><div class="kpi__l">Pendência</div></div>
-                <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando</div></div>
+                <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
                 <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
                 <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
               </div>
@@ -1191,7 +1191,7 @@ function renderHome(root){
               <th style="text-align:center">Qtd aptos</th>
               <th style="text-align:center">Sem vistoria</th>
               <th style="text-align:center">Com pendência</th>
-              <th style="text-align:center">Aguardando</th>
+              <th style="text-align:center">Aguardando conferência</th>
               <th style="text-align:center">Conferido</th>
               <th style="text-align:center">Concluído</th>
               <th></th>
@@ -1487,7 +1487,7 @@ function gerarPDFObra(obraId){
       .obra{font-size:20px;font-weight:700;margin-top:4px}
       .meta{margin:4px 0}
       .item{margin:0 0 14px 0;line-height:1.45}
-      .status{font-weight:700}
+      .status{font-weight:400}
       .hist{font-size:12px;color:#333}
     </style></head><body>`;
   let pages = 0;
@@ -1552,9 +1552,9 @@ function gerarPDFResumoDashboard(u, city){
     const obras = obrasByCityForUser(u, c).sort((a,b)=>String(a.name||a.id).localeCompare(String(b.name||b.id), "pt-BR"));
     const s = cityStatsFromObras(obras);
     html += `<h2>${cityLabel(c)}</h2>
-      <div class="sum">Obras: ${s.obras} | Aptos: ${s.total} | Sem vistoria: ${s.semVistoria} | Pendência: ${s.pend} | Aguardando: ${s.aguard} | Conferido: ${s.conferido} | Concluído: ${s.conclu}</div>
+      <div class="sum">Obras: ${s.obras} | Aptos: ${s.total} | Sem vistoria: ${s.semVistoria} | Pendência: ${s.pend} | Aguardando conferência: ${s.aguard} | Conferido: ${s.conferido} | Concluído: ${s.conclu}</div>
       <table>
-        <thead><tr><th>Obra</th><th>Qtd aptos</th><th>Sem vistoria</th><th>Pendência</th><th>Aguardando</th><th>Conferido</th><th>Concluído</th></tr></thead>
+        <thead><tr><th>Obra</th><th>Qtd aptos</th><th>Sem vistoria</th><th>Pendência</th><th>Aguardando conferência</th><th>Conferido</th><th>Concluído</th></tr></thead>
         <tbody>
           ${obras.map(o=>{
             const os = calcObraStats(o.id);
