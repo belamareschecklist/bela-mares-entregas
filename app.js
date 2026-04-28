@@ -47,8 +47,36 @@ const PENDENCIAS_PADRONIZADAS = {
   }
 };
 
-function itensPadronizados(frente, local){
-  const cfg = PENDENCIAS_PADRONIZADAS[frente];
+const HALL_PENDENCIAS_PADRONIZADAS = {
+  "Revestimento cerâmico": {
+    locais: ["Térreo", "PAV 1", "PAV 2", "PAV 3"],
+    itens: ["Peça trincada", "Faltando peça", "Sem PU", "Faltando rejunte", "Tonalidade diferente", "Outros"]
+  },
+  "Pintura": {
+    locais: ["Térreo", "PAV 1", "PAV 2", "PAV 3"],
+    itens: ["Mancha de tinta", "Mancha de umidade", "Parede riscada", "Tinta escorrida", "Recorte falho", "Tonalidade diferente", "Corrimão", "Outros"]
+  },
+  "Esquadrias": {
+    locais: ["Térreo", "PAV 1", "PAV 2", "PAV 3"],
+    itens: ["Porta de vidro", "Sem chave", "Fechadura com defeito", "Chave errada", "Janela não fecha", "Janela não tranca", "Sem silicone janela", "Vidro quebrado", "Borracha janela", "Outros"]
+  },
+  "Elétrica": {
+    locais: ["Térreo", "PAV 1", "PAV 2", "PAV 3"],
+    itens: ["Falta fiação", "Quadro de distribuição não fecha", "Espelho torto", "Quadro de distribuição sem adesivo", "Espelho sem parafuso", "Acabamentos das tomadas", "Acabamentos dos interruptores", "Plafon", "Sensor de presença", "Teste de energia não realizado", "Outros"]
+  },
+  "Sinalização de emergência": {
+    locais: ["Térreo", "PAV 1", "PAV 2", "PAV 3"],
+    itens: ["Falta extintor de incêndio", "Falta placa de sinalização", "Falta luminária de emergência", "Outros"]
+  }
+};
+
+function checklistPadronizadoPorTipo(apto){
+  return String(apto) === "Hall" ? HALL_PENDENCIAS_PADRONIZADAS : PENDENCIAS_PADRONIZADAS;
+}
+
+function itensPadronizados(frente, local, checklist){
+  const fonte = checklist || PENDENCIAS_PADRONIZADAS;
+  const cfg = fonte[frente];
   if(!cfg) return ["Outros"];
   if(cfg.itensPorLocal && cfg.itensPorLocal[local]) return cfg.itensPorLocal[local];
   return cfg.itens || ["Outros"];
@@ -227,7 +255,7 @@ function aptNumsByConfig(aptsPerBlock){
 }
 
 function aptNumsForBlock(obra, block){
-  const keys = Object.keys(block?.apartments || {});
+  const keys = Object.keys(block?.apartments || {}).filter(k => String(k) !== "Hall");
   if(keys.length) return keys.sort((a,b)=>Number(a)-Number(b));
   return aptNumsByConfig(obra?.config?.aptsPerBlock || 12);
 }
@@ -972,6 +1000,7 @@ function ensureRuntimeStyles(){
     .dot--b{background:#2563eb}
     .dot--g{background:#16a34a}
     .apt--conf{ background:rgba(37,99,235,.14)!important; border-color:#2563eb!important; color:#dbeafe!important; }
+    .apt--hall{font-weight:800;border-style:dashed!important;}
     .kpi__v{ color:#2563eb!important; }
     .kpi__l{ color:#475569!important; }
   `;
@@ -1156,7 +1185,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
         <div class="kpi"><div class="kpi__v">${s.aguard}</div><div class="kpi__l">Aguardando conferência</div></div>
         <div class="kpi"><div class="kpi__v">${s.conferido}</div><div class="kpi__l">Conferido</div></div>
         <div class="kpi"><div class="kpi__v">${s.conclu}</div><div class="kpi__l">Concluído</div></div>
-      </div>
+              </div>
 
       <div class="hr"></div>
       <table class="table">
@@ -1166,7 +1195,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
             <th style="text-align:center">Qtd aptos</th>
             <th style="text-align:center">Sem vistoria</th>
             <th style="text-align:center">Pendência</th>
-                        <th style="text-align:center">Aguardando conferência</th>
+            <th style="text-align:center">Aguardando conferência</th>
             <th style="text-align:center">Conferido</th>
             <th style="text-align:center">Concluído</th>
             <th></th>
@@ -1603,43 +1632,56 @@ function gerarPDFObra(obraId){
       .company{font-size:18px;font-weight:700}
       .obra{font-size:20px;font-weight:700;margin-top:4px}
       .meta{margin:4px 0}
-      .item{margin:0 0 14px 0;line-height:1.45}
+      .frente{font-size:14px;font-weight:700;margin:16px 0 8px;border-bottom:1px solid #999;padding-bottom:4px;text-transform:uppercase}
+      .item{margin:0 0 12px 0;line-height:1.45}
       .status{font-weight:400}
       .hist{font-size:12px;color:#333}
     </style></head><body>`;
   let pages = 0;
+
   blocks.forEach(block=>{
-    const apts = Object.keys(block.apartments || {}).sort((a,b)=>Number(a)-Number(b));
-    apts.forEach(apto=>{
-      const apt = block.apartments[apto];
+    const aptosOrdem = ["Hall", ...aptNumsForBlock(obra, block)];
+    aptosOrdem.forEach(apto=>{
+      const apt = getApartmentView(obraId, block.id, apto);
       const pendencias = (apt.pendencias || []);
       if(!pendencias.length) return;
       pages++;
+      const isHall = String(apto) === "Hall";
+      const grupos = {};
+      pendencias.forEach(p=>{
+        const frente = p.category || "Sem frente definida";
+        if(!grupos[frente]) grupos[frente] = [];
+        grupos[frente].push(p);
+      });
+      const frentes = Object.keys(grupos).sort((a,b)=>a.localeCompare(b,"pt-BR"));
       html += `
         <div class="page">
           <div class="header">
             <div class="company">Bela Mares Incorporações</div>
             <div class="obra">${esc(obra.name)}</div>
             <div class="meta">Bloco: ${esc(block.id)}</div>
-            <div class="meta">Apartamento: ${esc(apto)}</div>
+            <div class="meta">${isHall ? "Área comum: Hall" : `Apartamento: ${esc(apto)}`}</div>
           </div>`;
-      pendencias.forEach(p=>{
-        const loc = p.location ? ` (${esc(p.location)})` : "";
-        const obs = getObsPDF(p);
-        const hist = buildHistoricoPDF(p);
-        html += `
-          <div class="item">
-            - ${esc(p.title || "Pendência")}${loc}<br>
-            <span class="status">Status: ${esc(getStatusPDF(p))}</span><br>
-            ${obs ? `${esc(obs)}<br>` : ``}
-            ${hist ? `<span class="hist">Histórico: ${esc(hist)}</span>` : ``}
-          </div>`;
+      frentes.forEach(frente=>{
+        html += `<div class="frente">${esc(frente)}</div>`;
+        grupos[frente].forEach(p=>{
+          const loc = p.location ? ` (${esc(p.location)})` : "";
+          const obs = getObsPDF(p);
+          const hist = buildHistoricoPDF(p);
+          html += `
+            <div class="item">
+              <strong>- ${esc(p.title || "Pendência")}${loc}</strong><br>
+              <span class="status">Status: ${esc(getStatusPDF(p))}</span><br>
+              ${obs ? `${esc(obs)}<br>` : ``}
+              ${hist ? `<span class="hist">Histórico: ${esc(hist)}</span>` : ``}
+            </div>`;
+        });
       });
       html += `</div>`;
     });
   });
   html += `</body></html>`;
-  if(!pages) return toast("Não há apartamentos com pendências para gerar PDF.");
+  if(!pages) return toast("Não há apartamentos ou halls com pendências para gerar PDF.");
   const w = window.open("", "_blank");
   w.document.open();
   w.document.write(html);
@@ -1718,8 +1760,8 @@ function renderAptoDetalhe(root){
       <div class="card">
         <div class="row">
           <div>
-            <div class="h1">${esc(obra.name)} • ${esc(blockId)} • ${esc(apto)}</div>
-            <div class="small">Pendências do apartamento</div>
+            <div class="h1">${esc(obra.name)} • ${esc(blockId)} • ${String(apto)==="Hall" ? "Hall" : esc(apto)}</div>
+            ${String(apto)==="Hall" ? `<div class="small">Pendências do Hall / área comum</div>` : `<div class="small">Pendências do apartamento</div>`}
           </div>
           <div class="row" style="gap:8px">
             ${canCreatePendencia(u, obraId) ? `<button id="btnAddPend" class="btn btn--orange">+ Pendência</button>` : ``}
@@ -1764,16 +1806,17 @@ function renderAptoDetalhe(root){
   const btnAdd = $("#btnAddPend");
   if(btnAdd){
     btnAdd.onclick = ()=>{
-      const frentes = Object.keys(PENDENCIAS_PADRONIZADAS);
+      const checklistFonte = checklistPadronizadoPorTipo(apto);
+      const frentes = Object.keys(checklistFonte);
       const primeiraFrente = frentes[0];
-      const locaisIniciais = PENDENCIAS_PADRONIZADAS[primeiraFrente].locais;
+      const locaisIniciais = checklistFonte[primeiraFrente].locais;
       const primeiroLocal = locaisIniciais[0];
-      const itensIniciais = itensPadronizados(primeiraFrente, primeiroLocal);
+      const itensIniciais = itensPadronizados(primeiraFrente, primeiroLocal, checklistFonte);
 
       const { backdrop, close } = openModal(`
         <div class="modal">
           <div class="row">
-            <div><div class="h2">Nova pendência</div><div class="small">${esc(obra.name)} • ${esc(blockId)} • ${esc(apto)}</div></div>
+            <div><div class="h2">Nova pendência</div><div class="small">${esc(obra.name)} • ${esc(blockId)} • ${String(apto)==="Hall" ? "Hall" : esc(apto)}</div></div>
             <button class="btn btn--ghost" id="mClose">✕</button>
           </div>
           <div class="hr"></div>
@@ -1783,7 +1826,7 @@ function renderAptoDetalhe(root){
               <select id="mFrente" class="input">${optionHtml(frentes)}</select>
             </div>
             <div>
-              <div class="small">Local de aplicação</div>
+              <div class="small">${String(apto)==="Hall" ? "Pavimento" : "Local de aplicação"}</div>
               <select id="mLocal" class="input">${optionHtml(locaisIniciais)}</select>
             </div>
             <div>
@@ -1807,13 +1850,13 @@ function renderAptoDetalhe(root){
 
       function updateLocais(){
         const frente = frenteEl.value;
-        const locais = (PENDENCIAS_PADRONIZADAS[frente] && PENDENCIAS_PADRONIZADAS[frente].locais) || [];
+        const locais = (checklistFonte[frente] && checklistFonte[frente].locais) || [];
         localEl.innerHTML = optionHtml(locais);
         updateItens();
       }
 
       function updateItens(){
-        const itens = itensPadronizados(frenteEl.value, localEl.value);
+        const itens = itensPadronizados(frenteEl.value, localEl.value, checklistFonte);
         itemEl.innerHTML = optionHtml(itens);
         updateOutro();
       }
@@ -2044,7 +2087,7 @@ function renderObra(root){
           <div class="small">${cfg.numBlocks || "-"} blocos • ${cfg.aptsPerBlock || "-"} apto/bloco</div>
         </div>
         <div class="row" style="gap:8px">
-          ${["supervisor","diretor","engenheiro","coordenador"].includes(u.role) ? `<button id="btnPDFObra" class="btn">Gerar PDF</button>` : ``}
+          ${canAccessObra(u, obraId) ? `<button id="btnPDFObra" class="btn">Gerar PDF</button>` : ``}
         </div>
       </div>
       <div class="hr"></div>
@@ -2095,10 +2138,11 @@ function renderApto(root){
       <div class="hr"></div>
 
       <div class="grid apt-grid">
-        ${aptNums.map(an=>{
+        ${["Hall", ...aptNums].map(an=>{
           const a = getOrMakeApartment(obraId, blockId, an);
           const ps = a.pendencias || [];
           let cls = "apt";
+          if(String(an) === "Hall") cls += " apt--hall";
           if(ps.length){
             let hasPend=false, hasWait=false, hasConf=false;
             ps.forEach(p=>{
@@ -2281,3 +2325,5 @@ initFirestore();
 if(isOnline()) syncOfflineQueue();
 render();
     
+
+        
