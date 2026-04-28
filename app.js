@@ -4,6 +4,7 @@ const STATE_VERSION = 30;
 const STORAGE_KEY = "bm_checklist_classic_v1";
 const SESSION_KEY = "bm_checklist_session_user";
 const APARTMENTS_COLLECTION = "apartments";
+const OFFLINE_QUEUE_KEY = "bm_checklist_offline_queue_v1";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBZuzY9l0lbgD9rf79mQ_-tbUoLWPVmN08",
@@ -17,12 +18,54 @@ const FIREBASE_CONFIG = {
 const APT_NUMS_12 = ["101","102","103","104","201","202","203","204","301","302","303","304"];
 const APT_NUMS_16 = ["101","102","103","104","201","202","203","204","301","302","303","304","401","402","403","404"];
 
+const PENDENCIAS_PADRONIZADAS = {
+  "Revestimento cerâmico": {
+    locais: ["Sala", "Cozinha", "Banheiro", "Quarto 1", "Quarto 2"],
+    itens: ["Peça trincada", "Faltando peça", "Sem PU", "Faltando rejunte", "Tonalidade diferente", "Outros"]
+  },
+  "Pintura": {
+    locais: ["Sala", "Cozinha", "Banheiro", "Quarto 1", "Quarto 2"],
+    itens: ["Mancha de tinta", "Mancha de umidade", "Parede riscada", "Tinta escorrida", "Recorte falho", "Tonalidade diferente", "Outros"]
+  },
+  "Hidráulica": {
+    locais: ["Cozinha", "Banheiro", "Mureta hidráulica", "Hidrômetro", "Mureta elétrica"],
+    itensPorLocal: {
+      "Cozinha": ["Louça danificada", "Sem tanque", "Sem sifão", "Sem rabicho", "Sem grelha", "Sem silicone", "Sem acabamento de registro", "Teste de água", "Teste de esgoto", "Outros"],
+      "Banheiro": ["Louça danificada", "Sem rabicho", "Sem sifão", "Sem silicone", "Sem grelha", "Sem acabamento de registro", "Teste de água", "Teste de esgoto", "Outros"],
+      "Mureta hidráulica": ["Vazamento", "Outros"],
+      "Hidrômetro": ["Hidrômetro invertido", "Outros"],
+      "Mureta elétrica": ["Mureta elétrica invertida", "Outros"]
+    }
+  },
+  "Elétrica": {
+    locais: ["Sala", "Cozinha", "Banheiro", "Quarto 1", "Quarto 2"],
+    itens: ["Falta fiação", "Espelho torto", "Espelho sem parafuso", "Acabamentos das tomadas", "Acabamentos dos interruptores", "Plafon", "Quadro de distribuição não fecha", "Quadro de distribuição sem adesivo", "Teste de energia não realizado", "Outros"]
+  },
+  "Esquadrias": {
+    locais: ["Sala", "Cozinha", "Banheiro", "Quarto 1", "Quarto 2"],
+    itens: ["Portal solto", "Portal danificado", "Sem chave", "Faltando alisar", "Fechadura com defeito", "Chave errada", "Janela não fecha", "Janela não tranca", "Sem silicone janela", "Vidro quebrado", "Borracha janela", "Outros"]
+  }
+};
+
+function itensPadronizados(frente, local){
+  const cfg = PENDENCIAS_PADRONIZADAS[frente];
+  if(!cfg) return ["Outros"];
+  if(cfg.itensPorLocal && cfg.itensPorLocal[local]) return cfg.itensPorLocal[local];
+  return cfg.itens || ["Outros"];
+}
+
+function optionHtml(arr){
+  return (arr || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+}
+
+
 const $ = (sel, root=document) => root.querySelector(sel);
 const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 
 let localSaveDisabled = false;
 let saveTimer = null;
 let isApplyingRemote = false;
+let offlineQueue = [];
 
 let fbApp = null;
 let fbDb = null;
@@ -150,6 +193,33 @@ function setSessionUserId(id){
     }
     localStorage.setItem(SESSION_KEY, String(id).trim().toLowerCase());
   }catch(e){}
+}
+
+function isOnline(){
+  return typeof navigator === "undefined" ? true : navigator.onLine !== false;
+}
+
+function loadOfflineQueue(){
+  try{
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+    offlineQueue = raw ? JSON.parse(raw) : [];
+    if(!Array.isArray(offlineQueue)) offlineQueue = [];
+  }catch(e){ offlineQueue = []; }
+}
+
+function persistOfflineQueue(){
+  try{ localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue)); }catch(e){}
+}
+
+function enqueueOfflineAction(action){
+  if(!action || !action.actionId) return;
+  offlineQueue.push(action);
+  persistOfflineQueue();
+}
+
+function removeOfflineAction(actionId){
+  offlineQueue = offlineQueue.filter(x=>x.actionId !== actionId);
+  persistOfflineQueue();
 }
 
 function aptNumsByConfig(aptsPerBlock){
@@ -452,6 +522,12 @@ function currentUser(){
 
 function canViewOnly(u){ return ["diretor","engenheiro","coordenador"].includes(u.role); }
 function canCreate(u){ return ["qualidade","supervisor"].includes(u.role); }
+function isFormosaObra(obraId){ return normalizeCity((state.obras?.[obraId] || state.obras_index.find(o=>o.id===obraId) || {}).city) === "formosa"; }
+function canCreatePendencia(u, obraId){
+  if(!u) return false;
+  if(canCreate(u)) return true;
+  return u.role === "execucao" && isFormosaObra(obraId) && canAccessObra(u, obraId);
+}
 function canMarkDone(u){ return u.role === "execucao"; }
 function canQualityReview(u){ return u.role === "qualidade"; }
 function canSupervisorApprove(u){ return u.role === "supervisor"; }
@@ -545,47 +621,82 @@ function queueSaveToFirestore(){
   }, 250);
 }
 
-async function saveApartmentNowToFirestore(obraId, blockId, apto){
-  if(!fbReady) return;
+function buildApartmentPayload(obraId, blockId, apto){
   const apt = ensureAptPath(obraId, blockId, apto);
   const obra = state.obras?.[obraId];
   const now = Date.now();
-
-  const ref = fbDb
-    .collection("apps")
-    .doc("bela_mares_checklist")
-    .collection(APARTMENTS_COLLECTION)
-    .doc(makeAptDocId(obraId, blockId, apto));
-
-  await ref.set({
+  if(!apt._meta) apt._meta = {};
+  apt._meta.updatedAtMs = now;
+  return {
     obraId,
     obraName: obra?.name || obraId,
     blockId,
     apto: String(apto),
     pendencias: Array.isArray(apt.pendencias) ? apt.pendencias : [],
     photos: Array.isArray(apt.photos) ? apt.photos : [],
-    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
     updatedAtMs: now
-  }, { merge:true });
+  };
+}
 
-  if(!apt._meta) apt._meta = {};
-  apt._meta.updatedAtMs = now;
+async function saveApartmentNowToFirestore(obraId, blockId, apto){
+  const payload = buildApartmentPayload(obraId, blockId, apto);
+  const actionId = 'apt_' + makeAptDocId(obraId, blockId, apto) + '_' + payload.updatedAtMs;
+  if(!fbReady || !isOnline()){
+    enqueueOfflineAction({ actionId, type:"UPSERT_APT", payload, createdAtMs: Date.now() });
+    return { queued:true };
+  }
+  try{
+    const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION).doc(makeAptDocId(obraId, blockId, apto));
+    await ref.set({ ...payload, updatedAt: window.firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+    return { queued:false };
+  }catch(e){
+    enqueueOfflineAction({ actionId, type:"UPSERT_APT", payload, createdAtMs: Date.now() });
+    return { queued:true, error:e };
+  }
 }
 
 async function saveMetaNowToFirestore(){
-  if(!fbReady) return;
   const now = Date.now();
-  const metaRef = fbDb
-    .collection("apps")
-    .doc("bela_mares_checklist")
-    .collection("state")
-    .doc("meta");
+  const payload = { updatedAtMs: now, meta: JSON.stringify(persistableMetaState()) };
+  const actionId = 'meta_' + now;
+  if(!fbReady || !isOnline()){
+    enqueueOfflineAction({ actionId, type:"UPSERT_META", payload, createdAtMs: Date.now() });
+    return { queued:true };
+  }
+  try{
+    const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
+    await metaRef.set({ updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(), updatedAtMs: payload.updatedAtMs, meta: payload.meta }, { merge:true });
+    return { queued:false };
+  }catch(e){
+    enqueueOfflineAction({ actionId, type:"UPSERT_META", payload, createdAtMs: Date.now() });
+    return { queued:true, error:e };
+  }
+}
 
-  await metaRef.set({
-    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-    updatedAtMs: now,
-    meta: JSON.stringify(persistableMetaState())
-  }, { merge:true });
+async function syncOfflineQueue(){
+  if(!fbReady || !isOnline() || !offlineQueue.length) return;
+  const queue = [...offlineQueue].sort((a,b)=>(a.createdAtMs||0)-(b.createdAtMs||0));
+  let synced = 0;
+  for(const action of queue){
+    try{
+      if(action.type === "UPSERT_APT"){
+        const p = action.payload;
+        const ref = fbDb.collection("apps").doc("bela_mares_checklist").collection(APARTMENTS_COLLECTION).doc(makeAptDocId(p.obraId, p.blockId, p.apto));
+        await ref.set({ ...p, updatedAt: window.firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        removeOfflineAction(action.actionId);
+        synced++;
+      }else if(action.type === "UPSERT_META"){
+        const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
+        await metaRef.set({ updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(), updatedAtMs: action.payload.updatedAtMs, meta: action.payload.meta }, { merge:true });
+        removeOfflineAction(action.actionId);
+        synced++;
+      }
+    }catch(e){
+      console.warn("Falha ao sincronizar ação offline:", action, e);
+      break;
+    }
+  }
+  if(synced){ toast(synced + " alteração(ões) offline sincronizada(s)."); try{ render(); }catch(_){} }
 }
 
 function saveState(){
@@ -602,6 +713,7 @@ function initFirestore(){
 
     fbDb = window.firebase.firestore();
     fbReady = true;
+    syncOfflineQueue();
 
     const metaRef = fbDb.collection("apps").doc("bela_mares_checklist").collection("state").doc("meta");
     if(fbMetaUnsub) try{ fbMetaUnsub(); }catch(_){}
@@ -675,6 +787,11 @@ function initFirestore(){
     console.warn("Falha ao iniciar Firestore:", e);
   }
 }
+
+window.addEventListener("online", ()=>{
+  toast("Internet voltou. Sincronizando pendências offline...");
+  syncOfflineQueue();
+});
 
 function goto(screen, params={}){
   nav.screen = screen;
@@ -1049,7 +1166,7 @@ function renderCityDashboard(root, u, city, showBackToCities){
             <th style="text-align:center">Qtd aptos</th>
             <th style="text-align:center">Sem vistoria</th>
             <th style="text-align:center">Pendência</th>
-            <th style="text-align:center">Aguardando conferência</th>
+                        <th style="text-align:center">Aguardando conferência</th>
             <th style="text-align:center">Conferido</th>
             <th style="text-align:center">Concluído</th>
             <th></th>
@@ -1576,13 +1693,17 @@ function gerarPDFResumoDashboard(u, city){
 async function syncAptAndRefresh(obraId, blockId, apto, onDone, successMsg){
   try{
     saveState();
-    await saveApartmentNowToFirestore(obraId, blockId, apto);
-    await saveMetaNowToFirestore();
+    const aptResult = await saveApartmentNowToFirestore(obraId, blockId, apto);
+    const metaResult = await saveMetaNowToFirestore();
     if(typeof onDone === "function") onDone();
-    if(successMsg) toast(successMsg);
+    if(aptResult?.queued || metaResult?.queued){
+      toast("Salvo offline. Vai sincronizar quando a internet voltar.");
+    }else if(successMsg){
+      toast(successMsg);
+    }
   }catch(e){
     console.error(e);
-    toast("Erro ao sincronizar.");
+    toast("Salvo localmente. Tentará sincronizar depois.");
   }
 }
 
@@ -1601,7 +1722,7 @@ function renderAptoDetalhe(root){
             <div class="small">Pendências do apartamento</div>
           </div>
           <div class="row" style="gap:8px">
-            ${canCreate(u) ? `<button id="btnAddPend" class="btn btn--orange">+ Pendência</button>` : ``}
+            ${canCreatePendencia(u, obraId) ? `<button id="btnAddPend" class="btn btn--orange">+ Pendência</button>` : ``}
           </div>
         </div>
         <div class="hr"></div>
@@ -1643,6 +1764,12 @@ function renderAptoDetalhe(root){
   const btnAdd = $("#btnAddPend");
   if(btnAdd){
     btnAdd.onclick = ()=>{
+      const frentes = Object.keys(PENDENCIAS_PADRONIZADAS);
+      const primeiraFrente = frentes[0];
+      const locaisIniciais = PENDENCIAS_PADRONIZADAS[primeiraFrente].locais;
+      const primeiroLocal = locaisIniciais[0];
+      const itensIniciais = itensPadronizados(primeiraFrente, primeiroLocal);
+
       const { backdrop, close } = openModal(`
         <div class="modal">
           <div class="row">
@@ -1651,20 +1778,68 @@ function renderAptoDetalhe(root){
           </div>
           <div class="hr"></div>
           <div class="grid">
-            <div><div class="small">Descrição</div><input id="mTitle" class="input" placeholder="Ex.: Pintura com falha" /></div>
-            <div><div class="small">Categoria</div><input id="mCat" class="input" placeholder="Ex.: Pintura" /></div>
-            <div><div class="small">Local</div><input id="mLoc" class="input" placeholder="Ex.: Sala" /></div>
+            <div>
+              <div class="small">Frente de serviço</div>
+              <select id="mFrente" class="input">${optionHtml(frentes)}</select>
+            </div>
+            <div>
+              <div class="small">Local de aplicação</div>
+              <select id="mLocal" class="input">${optionHtml(locaisIniciais)}</select>
+            </div>
+            <div>
+              <div class="small">Pendência</div>
+              <select id="mItem" class="input">${optionHtml(itensIniciais)}</select>
+            </div>
+            <div id="mOutroWrap" style="display:none">
+              <div class="small">Descreva a pendência</div>
+              <input id="mOutro" class="input" placeholder="Digite a pendência" />
+            </div>
             <div class="row" style="justify-content:flex-end"><button id="mCreate" class="btn btn--orange">Adicionar</button></div>
           </div>
         </div>
       `);
 
+      const frenteEl = $("#mFrente", backdrop);
+      const localEl = $("#mLocal", backdrop);
+      const itemEl = $("#mItem", backdrop);
+      const outroWrap = $("#mOutroWrap", backdrop);
+      const outroEl = $("#mOutro", backdrop);
+
+      function updateLocais(){
+        const frente = frenteEl.value;
+        const locais = (PENDENCIAS_PADRONIZADAS[frente] && PENDENCIAS_PADRONIZADAS[frente].locais) || [];
+        localEl.innerHTML = optionHtml(locais);
+        updateItens();
+      }
+
+      function updateItens(){
+        const itens = itensPadronizados(frenteEl.value, localEl.value);
+        itemEl.innerHTML = optionHtml(itens);
+        updateOutro();
+      }
+
+      function updateOutro(){
+        const isOutro = itemEl.value === "Outros";
+        outroWrap.style.display = isOutro ? "block" : "none";
+        if(!isOutro && outroEl) outroEl.value = "";
+      }
+
+      frenteEl.onchange = updateLocais;
+      localEl.onchange = updateItens;
+      itemEl.onchange = updateOutro;
+
       $("#mClose", backdrop).onclick = close;
       $("#mCreate", backdrop).onclick = async ()=>{
-        const title = ($("#mTitle", backdrop).value || "").trim();
-        const category = ($("#mCat", backdrop).value || "").trim();
-        const location = ($("#mLoc", backdrop).value || "").trim();
-        if(!title) return toast("Informe a descrição.");
+        const category = (frenteEl.value || "").trim();
+        const location = (localEl.value || "").trim();
+        const item = (itemEl.value || "").trim();
+        const other = (outroEl?.value || "").trim();
+        const title = item === "Outros" ? other : item;
+
+        if(!category) return toast("Selecione a frente de serviço.");
+        if(!location) return toast("Selecione o local de aplicação.");
+        if(!item) return toast("Selecione a pendência.");
+        if(item === "Outros" && !other) return toast("Descreva a pendência em Outros.");
 
         const p = {
           id: uid("p"),
@@ -2100,7 +2275,9 @@ function renderSettings(root){
 }
 
 ensureSystemDefaults();
+loadOfflineQueue();
 persistLocal();
 initFirestore();
+if(isOnline()) syncOfflineQueue();
 render();
     
